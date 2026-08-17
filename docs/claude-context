@@ -1,0 +1,120 @@
+# nh — Design Notes & Decisions
+
+A new Go CLI (`nh`) for NervesCloud / NervesHub, replacing the Elixir +
+Burrito `nerves_hub_cli`. This file captures the reasoning and the foundation
+so it can be used as context (e.g. @-mention it in Zed's Agent Panel).
+
+## Decision: write the new CLI in Go
+
+Chosen over Rust, Zig, and staying on Elixir.
+
+**Why not stay on Elixir + Burrito**
+- The BEAM is built for long-lived, supervised, concurrent processes (OTP,
+  hot code reload, the actor model). A CLI boots, does one thing, and exits —
+  it uses none of that while still paying for VM startup on every invocation
+  and bundling the whole runtime into a large binary.
+- The current mess is largely a migration artifact: it began as a library of
+  Mix tasks and was reshaped into a standalone CLI. Cleaning that up in Elixir
+  is effort spent refactoring toward a CLI shape the language gives no native
+  scaffolding for. Elixir has no opinionated CLI framework (no Cobra/clap), so
+  command organization drifts toward ad hoc.
+
+**Why Go over Rust**
+- *Crypto is the deciding axis.* The CLI generates X.509 device certificates
+  and handles signing keys. Go's `crypto/x509`, `crypto/ed25519`, and
+  `crypto/tls` are batteries-included and battle-tested. In Rust you assemble
+  that layer (rcgen, ed25519-dalek, rustls/openssl), and X.509 *generation*
+  specifically is the least turnkey part of the Rust crypto story. This is the
+  security-sensitive code least suited to hand-wiring.
+- *Contributors.* The Nerves community is Elixir end to end. Go is far more
+  approachable for a drive-by contributor (days, not months) than Rust's
+  borrow checker.
+- *Native tongue of the category.* Infra/devops CLIs are overwhelmingly Go —
+  including flyctl, already used to deploy NervesHub. Recognizable idioms,
+  mature libs (Cobra), well-trodden cross-compile + release tooling.
+- *Time to value.* Faster to a clean, cross-compiled binary; simpler release
+  pipeline. A REST + crypto + arg-parsing + output CLI has none of the hot
+  paths or invariants where Rust's stricter model earns its overhead.
+
+**Zig** was ruled out: pre-1.0 with breaking changes, young `std.http`, no
+mature arg-parsing framework, and no high-level X.509 generation in std
+(you'd hand-roll DER/ASN.1). Note Burrito already uses Zig internally for
+cross-compilation — that's Zig's actual sweet spot, not application code.
+
+> A prior Rust experiment (`nervesctl`, clap/reqwest/serde/tabled) is treated
+> as a throwaway prototype — not a reason to pick Rust via sunk cost.
+
+## Migration principle
+
+Treat the existing CLI's behavior — especially the crypto / cert-generation /
+signing-key paths — as the executable spec. Port command-by-command behind the
+same `nh`-style UX so users don't notice. Do **not** rebuild the
+security-sensitive parts from scratch; lean on Go's `crypto/x509` so that layer
+isn't hand-assembled.
+
+## Project foundation (Cobra + cobra-cli)
+
+```sh
+mkdir nh && cd nh
+go mod init github.com/nerves-hub/nh   # adjust to the real repo path
+go install github.com/spf13/cobra-cli@latest
+
+cobra-cli init --author "Your Name" --license apache
+```
+
+Top-level nouns (mirroring the existing CLI):
+
+```sh
+cobra-cli add config
+cobra-cli add user
+cobra-cli add org
+cobra-cli add product
+cobra-cli add device
+cobra-cli add firmware
+cobra-cli add deployment
+cobra-cli add key        # firmware signing keys
+```
+
+Verbs attach to a parent via `-p <noun>Cmd`:
+
+```sh
+cobra-cli add auth -p userCmd          # nh user auth
+cobra-cli add whoami -p userCmd        # nh user whoami
+cobra-cli add list -p deviceCmd        # nh device list
+cobra-cli add create -p deviceCmd      # nh device create
+cobra-cli add cert -p deviceCmd        # nh device cert ...
+cobra-cli add set -p configCmd         # nh config set
+cobra-cli add get -p configCmd         # nh config get
+```
+
+## Architecture: keep `cmd/` thin
+
+The thing the old codebase lost in the library-to-CLI migration. Be deliberate
+from line one.
+
+- `cmd/` — flag parsing only; calls into `internal/`. No business logic.
+- `internal/api` — HTTP client (`net/http` + structs). The reqwest-equivalent.
+- `internal/config` — URI / token / data-dir handling; bind env vars
+  (`NERVES_CLOUD_TOKEN` / `NERVES_HUB_TOKEN`, `_ORG`, `_PRODUCT`, `_URI`,
+  `_NON_INTERACTIVE`, etc.).
+- `internal/pki` (or `crypto`) — wraps `crypto/x509` and `crypto/ed25519` for
+  cert and signing-key paths.
+
+```sh
+mkdir -p internal/api internal/config internal/pki
+```
+
+## Distribution
+
+The old CLI ships via a Homebrew tap + curl installer with cross-compiled
+binaries (what Burrito handled). Replace with **GoReleaser**: cross-compilation,
+GitHub releases, and the Homebrew tap formula from one `.goreleaser.yaml`. Add
+it early rather than hand-rolling release scripts.
+
+## Open / next steps
+
+- `root.go` setup: persistent flags for `--org` / `--product` / `--uri`,
+  env-var binding for the `NERVES_CLOUD_*` / `NERVES_HUB_*` family, and a global
+  JSON-vs-table output flag (Cobra doesn't generate this).
+- Decide table-rendering lib for non-JSON output.
+- Port crypto/cert paths first and pin behavior against the old CLI's tests.
