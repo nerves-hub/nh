@@ -1,8 +1,29 @@
 # nh
 
+[![CI](https://github.com/nerves-hub/nh/actions/workflows/ci.yml/badge.svg)](https://github.com/nerves-hub/nh/actions/workflows/ci.yml)
+
 `nh` is the command-line interface for [NervesCloud](https://nervescloud.com) and [NervesHub](https://nerves-hub.org/). It manages organizations, products, devices, firmware, deployments, firmware signing keys, and generates the X.509 certificates devices use to authenticate — all from your terminal.
 
 ## Installation
+
+### Homebrew (macOS and Linux)
+
+```sh
+brew install nerves-hub/tap/nh-cli
+```
+
+If you have the old Elixir CLI installed, it provides the same `nh` command;
+remove it first to avoid a conflict:
+
+```sh
+brew uninstall nerves-hub/tap/nh
+```
+
+### Prebuilt binaries
+
+Download the archive for your OS and architecture from the
+[latest release](https://github.com/nerves-hub/nh/releases/latest), extract it,
+and put the `nh` binary on your `PATH`.
 
 ### From source
 
@@ -22,6 +43,8 @@ Or install straight from the module path:
 ```sh
 go install github.com/nerves-hub/nh@latest
 ```
+
+Check your install with `nh --version`.
 
 ### Runtime dependency
 
@@ -262,6 +285,25 @@ Guidelines:
 - Treat the security-sensitive crypto/cert/signing paths carefully; lean on Go's
   standard `crypto/*` packages rather than hand-rolling.
 - Add or update tests alongside code — most commands have a matching `_test.go`.
+
+## Releasing
+
+Releases are automated with [GoReleaser](https://goreleaser.com) via the
+`.github/workflows/release.yml` workflow. To cut a release, push a semver tag:
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The workflow cross-compiles binaries (macOS/Linux/Windows × amd64/arm64), creates
+the GitHub release with archives and checksums, and updates the Homebrew cask.
+
+Preview a release locally without publishing:
+
+```sh
+goreleaser release --snapshot --clean --skip=publish
+```
 
 ## License
 

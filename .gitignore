@@ -1,0 +1,5 @@
+# GoReleaser build output
+/dist/
+
+# Compiled binary from `go build -o nh .`
+/nh

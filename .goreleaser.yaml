@@ -1,0 +1,88 @@
+# GoReleaser configuration for nh.
+# Docs: https://goreleaser.com
+version: 2
+
+project_name: nh
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: nh
+    main: .
+    binary: nh
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/nerves-hub/nh/cmd.version={{ .Version }}
+      - -X github.com/nerves-hub/nh/cmd.commit={{ .ShortCommit }}
+      - -X github.com/nerves-hub/nh/cmd.date={{ .Date }}
+
+archives:
+  - id: nh
+    formats:
+      - tar.gz
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+      - "^chore:"
+      - "Merge pull request"
+      - "Merge branch"
+
+# Publishes a Homebrew cask to the nerves-hub/homebrew-tap repository.
+# Requires a HOMEBREW_TAP_GITHUB_TOKEN secret with write access to that repo
+# (the default GITHUB_TOKEN cannot push to another repository).
+homebrew_casks:
+  # Installs as `nh-cli` (the old Elixir CLI already owns `nh` in this tap), but
+  # the installed binary is still `nh` — users keep running `nh`.
+  - name: nh-cli
+    binaries:
+      - nh
+    repository:
+      owner: nerves-hub
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Casks
+    homepage: "https://github.com/nerves-hub/nh"
+    description: "Command-line interface for NervesCloud / NervesHub"
+    # The old Elixir CLI ships the `nh` formula, which installs the same `nh`
+    # binary. Homebrew no longer supports cask→formula conflicts, so warn instead
+    # (a formula/cask collision otherwise fails with an opaque link error).
+    caveats: |
+      This cask installs the `nh` command. The old Elixir CLI installs an `nh`
+      formula that provides the same command. If you have it, remove it first:
+        brew uninstall nerves-hub/tap/nh
+    # The released binary is not code-signed/notarized, so strip the macOS
+    # quarantine attribute on install to avoid a Gatekeeper prompt.
+    hooks:
+      post:
+        install: |
+          if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/nh"]
+          end
