@@ -133,6 +133,8 @@ variable — see [Configuration](#configuration)):
 - `reboot <identifier>`, `reconnect <identifier>`
 - `clear-penalty <identifier>` — clear a device's penalty box
 - `console <identifier>`, `shell <identifier>` — connect to a device's console/shell
+- `iroh-console <identifier>` — open a remote IEx console over a peer-to-peer iroh
+  connection (`--auth`, `--instance`; Ctrl-] to detach)
 - `run-code <identifier> <code>` — run Elixir code on a device
 - `scripts <identifier>`, `run-script <identifier> <name-or-id>` — support scripts
 - `external-identities <identifier>` — list the keys a device reports holding on
