@@ -31,8 +31,8 @@ import (
 
 // configSetCmd implements `nh config set <key> <value>`.
 var configSetCmd = &cobra.Command{
-	Use:       "set <key> <value>",
-	Short:     "Set a default (uri, org, or product)",
+	Use:   "set <key> <value>",
+	Short: "Set a default (uri, org, or product)",
 	Long: `Persist a default value. Valid keys are uri, org, and product.
 
 The uri is the NervesHub/NervesCloud API base URL; set it to point nh at a
