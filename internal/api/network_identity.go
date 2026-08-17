@@ -28,10 +28,10 @@ import (
 	"net/url"
 )
 
-// ExternalIdentity is a key a device holds on a network NervesHub does not run
+// NetworkIdentity is a key a device holds on a network NervesHub does not run
 // (an iroh endpoint id, a NetBird / Tailscale / WireGuard public key), as
-// returned by the external_identities and iroh_endpoints endpoints.
-type ExternalIdentity struct {
+// returned by the network_identities and iroh_endpoints endpoints.
+type NetworkIdentity struct {
 	// Identifier is the value possession of which is proven — a public key.
 	Identifier string `json:"identifier"`
 	// Service is the protocol, e.g. "iroh", "netbird", "tailscale", "wireguard".
@@ -52,9 +52,9 @@ type ExternalIdentity struct {
 }
 
 // IrohEndpoint is an iroh endpoint id registered to an organization: an
-// ExternalIdentity with the owner spelled out.
+// NetworkIdentity with the owner spelled out.
 type IrohEndpoint struct {
-	ExternalIdentity
+	NetworkIdentity
 	Owner IrohEndpointOwner `json:"owner"`
 }
 
@@ -68,18 +68,18 @@ type IrohEndpointOwner struct {
 	UserEmail        string `json:"user_email,omitempty"`
 }
 
-// DeviceExternalIdentityFilter narrows the identities returned for a device.
+// DeviceNetworkIdentityFilter narrows the identities returned for a device.
 // Empty fields are omitted; the server rejects an unknown service or a blank
 // non-empty filter is treated as no filter.
-type DeviceExternalIdentityFilter struct {
+type DeviceNetworkIdentityFilter struct {
 	Service  string
 	Instance string
 }
 
-// ListDeviceExternalIdentities returns the external identities a device has
+// ListDeviceNetworkIdentities returns the network identities a device has
 // reported, via GET
-// /orgs/{org}/products/{product}/devices/{identifier}/external_identities.
-func (c *Client) ListDeviceExternalIdentities(ctx context.Context, org, product, identifier string, filter DeviceExternalIdentityFilter) ([]ExternalIdentity, error) {
+// /orgs/{org}/products/{product}/devices/{identifier}/network_identities.
+func (c *Client) ListDeviceNetworkIdentities(ctx context.Context, org, product, identifier string, filter DeviceNetworkIdentityFilter) ([]NetworkIdentity, error) {
 	if org == "" {
 		return nil, errors.New("api: org is required")
 	}
@@ -99,9 +99,9 @@ func (c *Client) ListDeviceExternalIdentities(ctx context.Context, org, product,
 	}
 
 	var resp struct {
-		Data []ExternalIdentity `json:"data"`
+		Data []NetworkIdentity `json:"data"`
 	}
-	if err := c.Get(ctx, devicePath(org, product, identifier)+"/external_identities", query, &resp); err != nil {
+	if err := c.Get(ctx, devicePath(org, product, identifier)+"/network_identities", query, &resp); err != nil {
 		return nil, err
 	}
 	return resp.Data, nil

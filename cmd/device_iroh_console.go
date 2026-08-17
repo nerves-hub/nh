@@ -52,7 +52,7 @@ var deviceIrohConsoleCmd = &cobra.Command{
 	Long: `Open an interactive IEx console to a device running an IrohConsole endpoint,
 over a peer-to-peer iroh connection.
 
-nh reads the device's iroh ticket from its reported external identities, ensures
+nh reads the device's iroh ticket from its reported network identities, ensures
 this machine's iroh endpoint is registered with the organization (so the hosted
 relay authorizes it), connects, and bridges your terminal to the device.
 
@@ -158,7 +158,7 @@ func ensureIrohEndpointRegistered(ctx context.Context, cmd *cobra.Command, clien
 // deviceIrohTicket fetches the device's iroh ticket from its reported external
 // identities. The identity's identifier is the ticket used to dial it.
 func deviceIrohTicket(ctx context.Context, client *api.Client, org, product, identifier, instance string) (string, error) {
-	ids, err := client.ListDeviceExternalIdentities(ctx, org, product, identifier, api.DeviceExternalIdentityFilter{
+	ids, err := client.ListDeviceNetworkIdentities(ctx, org, product, identifier, api.DeviceNetworkIdentityFilter{
 		Service:  irohConsoleService,
 		Instance: instance,
 	})

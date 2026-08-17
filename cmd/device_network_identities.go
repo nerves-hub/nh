@@ -30,12 +30,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// deviceExternalIdentitiesCmd implements
-// `nh device external-identities <identifier>`.
-var deviceExternalIdentitiesCmd = &cobra.Command{
-	Use:     "external-identities <identifier>",
+// deviceNetworkIdentitiesCmd implements
+// `nh device network-identities <identifier>`.
+var deviceNetworkIdentitiesCmd = &cobra.Command{
+	Use:     "network-identities <identifier>",
 	Aliases: []string{"identities"},
-	Short:   "List the external identities a device holds",
+	Short:   "List the network identities a device holds",
 	Long: `List the keys a device has reported holding on other networks — an iroh
 endpoint id, a NetBird, Tailscale or WireGuard public key.
 
@@ -43,16 +43,16 @@ endpoint id, a NetBird, Tailscale or WireGuard public key.
 that protocol. This view is read-only: a device reports its own identities over
 its own connection.`,
 	Args: deviceIdentifierArgs,
-	RunE: runDeviceExternalIdentities,
+	RunE: runDeviceNetworkIdentities,
 }
 
 func init() {
-	deviceExternalIdentitiesCmd.Flags().String("service", "", "only identities for this protocol (e.g. iroh)")
-	deviceExternalIdentitiesCmd.Flags().String("instance", "", "only this endpoint of the protocol")
-	deviceCmd.AddCommand(deviceExternalIdentitiesCmd)
+	deviceNetworkIdentitiesCmd.Flags().String("service", "", "only identities for this protocol (e.g. iroh)")
+	deviceNetworkIdentitiesCmd.Flags().String("instance", "", "only this endpoint of the protocol")
+	deviceCmd.AddCommand(deviceNetworkIdentitiesCmd)
 }
 
-func runDeviceExternalIdentities(cmd *cobra.Command, args []string) error {
+func runDeviceNetworkIdentities(cmd *cobra.Command, args []string) error {
 	identifier := args[0]
 
 	cfg := config.From(cmd.Context())
@@ -66,7 +66,7 @@ func runDeviceExternalIdentities(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	identities, err := client.ListDeviceExternalIdentities(cmd.Context(), org, product, identifier, api.DeviceExternalIdentityFilter{
+	identities, err := client.ListDeviceNetworkIdentities(cmd.Context(), org, product, identifier, api.DeviceNetworkIdentityFilter{
 		Service:  mustString(cmd, "service"),
 		Instance: mustString(cmd, "instance"),
 	})
@@ -80,7 +80,7 @@ func runDeviceExternalIdentities(cmd *cobra.Command, args []string) error {
 	}
 
 	if len(identities) == 0 {
-		fmt.Fprintf(w, "No external identities found for device %s.\n", identifier)
+		fmt.Fprintf(w, "No network identities found for device %s.\n", identifier)
 		return nil
 	}
 
