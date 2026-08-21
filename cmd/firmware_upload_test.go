@@ -81,13 +81,31 @@ func TestFirmwareUploadMissingFile(t *testing.T) {
 	}
 }
 
+// Outside a Nerves project there is nothing to detect, so an omitted path must
+// say so rather than reporting a confusing file error.
 func TestFirmwareUploadMissingPathArg(t *testing.T) {
+	t.Chdir(t.TempDir())
+
 	_, err := execCmd(t, "",
 		"firmware", "upload",
 		"--org", "acme", "--product", "thermostat",
 		"--token", "tok",
 	)
-	if err == nil || err.Error() != "Firmware file path missing" {
-		t.Errorf("want friendly message, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "firmware file path missing") {
+		t.Errorf("want a missing-path message, got %v", err)
+	}
+	if err != nil && !strings.Contains(err.Error(), "Nerves project") {
+		t.Errorf("message should explain detection was not possible, got %v", err)
+	}
+}
+
+func TestFirmwareUploadTooManyPathArgs(t *testing.T) {
+	_, err := execCmd(t, "",
+		"firmware", "upload", "one.fw", "two.fw",
+		"--org", "acme", "--product", "thermostat",
+		"--token", "tok",
+	)
+	if err == nil || !strings.Contains(err.Error(), "single file path") {
+		t.Errorf("want a too-many-args message, got %v", err)
 	}
 }

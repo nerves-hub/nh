@@ -142,7 +142,10 @@ variable — see [Configuration](#configuration)):
 
 **`nh firmware`** — manage firmware
 - `list`, `show <uuid>`, `download <uuid>`, `delete <uuid>`
-- `upload <path>` — sign (via `fwup`) and upload a firmware file (`--skip-signing` to skip)
+- `upload [path]` (alias `publish`) — sign (via `fwup`) and upload a firmware file
+  (`--skip-signing` to skip). Inside a Nerves project the path is optional and the
+  built image is detected. `--deploy <group>` (repeatable) points deployment groups
+  at the new firmware once the upload succeeds
 
 **`nh deployment`** — manage deployment groups
 - `list`, `show <name>`, `create <name>`, `update <name>`, `delete <name>`
@@ -217,6 +220,7 @@ Every variable is read with the `NERVES_HUB_` prefix and, equivalently, the
 | `NERVES_HUB_DATA_DIR` | Directory for local state (settings, keys) | `~/.nh` |
 | `NERVES_HUB_NON_INTERACTIVE` | Disable all prompts; missing input is an error (useful in CI) | `false` |
 | `NERVES_HUB_PRIVATE_KEY` | Unencrypted base64 signing key for `firmware upload` (alternative to `--key`) | — |
+| `NERVES_HUB_DEPLOYMENT_NAME` | Deployment group `firmware upload` updates when `--deploy` is not given | — |
 
 Boolean variables accept `1`, `true`, `yes`, `y`, or `on` (case-insensitive).
 

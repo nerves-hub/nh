@@ -20,9 +20,10 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 */
 
-// Package mix auto-detects the NervesCloud organization and product from an
-// Elixir/Nerves project in the working directory, by reading the Mix project
-// configuration via `mix eval`.
+// Package mix auto-detects details of an Elixir/Nerves project in the working
+// directory: the NervesCloud organization and product, by reading the Mix
+// project configuration via `mix eval`, and the built firmware image, by
+// globbing the standard Nerves build layout.
 package mix
 
 import (
