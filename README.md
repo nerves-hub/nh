@@ -133,8 +133,12 @@ variable — see [Configuration](#configuration)):
 - `reboot <identifier>`, `reconnect <identifier>`
 - `clear-penalty <identifier>` — clear a device's penalty box
 - `console <identifier>`, `shell <identifier>` — connect to a device's console/shell
+- `iroh-console <identifier>` — open a remote IEx console over a peer-to-peer iroh
+  connection (`--auth`, `--instance`; Ctrl-] to detach)
 - `run-code <identifier> <code>` — run Elixir code on a device
 - `scripts <identifier>`, `run-script <identifier> <name-or-id>` — support scripts
+- `network-identities <identifier>` — list the keys a device reports holding on
+  other networks (iroh/NetBird/Tailscale/WireGuard); `--service`/`--instance` filters
 - `certificates` — manage a device's certificates
   - `list <identifier>`, `show <identifier> <serial>`, `delete <identifier> <serial>`
   - `generate <identifier>` — generate a device key and CSR or signed certificate locally
@@ -157,6 +161,11 @@ variable — see [Configuration](#configuration)):
 - `generate` — generate a CA certificate locally
 - `upload [name]` — register a CA certificate with the organization
 - `list`, `show <serial>`, `delete <serial>`
+
+**`nh iroh-endpoint`** (alias `iroh`) — manage an organization's iroh endpoint ids
+- `list` — list registered endpoints; `--owner device|user|none`, `--search <text>`
+- `register <identifier>` — register an endpoint id; `--instance`, `--user-email`, `--detail key=value`
+- `show <identifier>`, `delete <identifier>`
 
 **`nh script`** — manage support scripts
 - `list`, `show <id>`, `create`, `update <id>`, `delete <id>`
