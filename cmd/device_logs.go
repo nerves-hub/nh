@@ -74,6 +74,10 @@ passed straight back as the next --before without repeating that line.
 Both accept an ISO 8601 timestamp (2026-08-16T09:14:00Z) or an offset from now
 (30m, 2h, 3d).
 
+--search keeps only lines whose message contains the given text, ignoring case.
+It is matched literally, so % and _ are searched for rather than treated as
+wildcards.
+
 --follow prints the most recent lines and then keeps printing new ones until
 interrupted, the way tail -f does. The API has no streaming endpoint, so this
 is polling; --interval sets how often it asks.
@@ -82,6 +86,7 @@ Log lines are dropped three days after they were logged, and are only collected
 while the logging extension is enabled for the product or device.`,
 	Example: `  nh device logs thermostat-4021
   nh device logs thermostat-4021 --level error,warning --limit 50
+  nh device logs thermostat-4021 --search "sensor bus"
   nh device logs thermostat-4021 --since 2h --order asc
   nh device logs thermostat-4021 --follow
   nh device logs thermostat-4021 -o json`,
@@ -91,6 +96,7 @@ while the logging extension is enabled for the product or device.`,
 
 func init() {
 	deviceLogsCmd.Flags().StringSlice("level", nil, "only lines at these levels (repeatable, or comma-separated)")
+	deviceLogsCmd.Flags().String("search", "", "only lines whose message contains this text (case-insensitive, matched literally)")
 	deviceLogsCmd.Flags().String("since", "", "only lines at or after this time (ISO 8601, or an offset like 2h)")
 	deviceLogsCmd.Flags().String("before", "", "only lines before this time (ISO 8601, or an offset like 2h)")
 	deviceLogsCmd.Flags().Int("limit", 0, fmt.Sprintf("maximum lines to return, 1-%d (default 100)", logsMaxLimit))
@@ -355,6 +361,7 @@ func deviceLogsFilter(cmd *cobra.Command) (api.DeviceLogsFilter, error) {
 
 	levels, _ := cmd.Flags().GetStringSlice("level")
 	filter.Levels = levels
+	filter.Search = mustString(cmd, "search")
 
 	since, err := resolveLogTime(mustString(cmd, "since"))
 	if err != nil {

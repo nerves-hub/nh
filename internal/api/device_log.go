@@ -52,6 +52,10 @@ type DeviceLogsFilter struct {
 	// comma-separated list the API expects, and are matched as given: a level
 	// the device never logs at simply matches nothing.
 	Levels []string
+	// Search matches lines whose message contains this text, ignoring case. It
+	// is matched literally, so % and _ are searched for rather than treated as
+	// wildcards.
+	Search string
 	// Since is inclusive, Before exclusive, both ISO 8601. Before being
 	// exclusive means the oldest line of a page can be passed straight back to
 	// fetch the next one without repeating it.
@@ -79,6 +83,9 @@ func (c *Client) ListDeviceLogs(ctx context.Context, org, product, identifier st
 	query := url.Values{}
 	if levels := trimmedNonEmpty(filter.Levels); len(levels) > 0 {
 		query.Set("level", strings.Join(levels, ","))
+	}
+	if search := strings.TrimSpace(filter.Search); search != "" {
+		query.Set("search", search)
 	}
 	if filter.Since != "" {
 		query.Set("since", filter.Since)

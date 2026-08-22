@@ -430,3 +430,70 @@ func TestDeviceLogsFollowRejectsConflictingFlags(t *testing.T) {
 		})
 	}
 }
+
+func TestDeviceLogsSearchSentAsQuery(t *testing.T) {
+	srv, _, query := logsServer(t)
+
+	if _, err := execCmd(t, "",
+		"device", "logs", "dev1", "--search", "sensor bus",
+		"--org", "acme", "--product", "thermostat",
+		"--uri", srv.URL, "--token", "tok",
+	); err != nil {
+		t.Fatalf("logs --search: %v", err)
+	}
+	if got := (*query).Get("search"); got != "sensor bus" {
+		t.Errorf("search = %q, want %q", got, "sensor bus")
+	}
+}
+
+// The term is passed through untouched: the server matches it literally, so
+// wildcard characters must not be escaped or stripped on the way out.
+func TestDeviceLogsSearchPassesTermThroughLiterally(t *testing.T) {
+	srv, _, query := logsServer(t)
+
+	if _, err := execCmd(t, "",
+		"device", "logs", "dev1", "--search", "100% of _reads_",
+		"--org", "acme", "--product", "thermostat",
+		"--uri", srv.URL, "--token", "tok",
+	); err != nil {
+		t.Fatalf("logs --search: %v", err)
+	}
+	if got := (*query).Get("search"); got != "100% of _reads_" {
+		t.Errorf("search = %q, want it passed through unchanged", got)
+	}
+}
+
+// A blank search is not a filter, so it must not be sent at all.
+func TestDeviceLogsBlankSearchIsOmitted(t *testing.T) {
+	srv, _, query := logsServer(t)
+
+	if _, err := execCmd(t, "",
+		"device", "logs", "dev1", "--search", "   ",
+		"--org", "acme", "--product", "thermostat",
+		"--uri", srv.URL, "--token", "tok",
+	); err != nil {
+		t.Fatalf("logs: %v", err)
+	}
+	if _, ok := (*query)["search"]; ok {
+		t.Errorf("a blank --search should not be sent, got %v", *query)
+	}
+}
+
+// Filters must keep applying to the lines a tail picks up, not just the first
+// page.
+func TestDeviceLogsFollowKeepsSearchOnPolls(t *testing.T) {
+	initial := `{"data":[{"timestamp":"2026-08-16T09:14:00.000000Z","level":"error","message":"sensor bus failed"}]}`
+	srv, queries := followServer(t, initial, `{"data":[]}`)
+
+	_ = runFollow(t, srv.URL, 200*time.Millisecond, "--search", "sensor bus")
+
+	q := queries()
+	if len(q) < 2 {
+		t.Fatalf("expected a poll after the initial page, got %d requests", len(q))
+	}
+	for i, query := range q {
+		if got := query.Get("search"); got != "sensor bus" {
+			t.Errorf("request %d dropped the search filter: search=%q", i, got)
+		}
+	}
+}
