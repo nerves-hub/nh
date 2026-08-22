@@ -136,7 +136,8 @@ variable — see [Configuration](#configuration)):
 - `iroh-console <identifier>` — open a remote IEx console over a peer-to-peer iroh
   connection (`--auth`, `--instance`; Ctrl-] to detach)
 - `logs <identifier>` — show the log lines a device has sent
-  (`--level`, `--since`, `--before`, `--limit`, `--order`, `--meta`)
+  (`--level`, `--since`, `--before`, `--limit`, `--order`, `--meta`);
+  `-f`/`--follow` tails new lines by polling (`--interval`)
 - `run-code <identifier> <code>` — run Elixir code on a device
 - `scripts <identifier>`, `run-script <identifier> <name-or-id>` — support scripts
 - `network-identities <identifier>` — list the keys a device reports holding on

@@ -1,10 +1,13 @@
 package cmd
 
 import (
+	"bytes"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -234,6 +237,195 @@ func TestDeviceLogsRejectsBadFilters(t *testing.T) {
 			}
 			if called {
 				t.Error("no request should be made for an invalid filter")
+			}
+		})
+	}
+}
+
+// followServer serves a scripted sequence of responses, one per request, and
+// records the queries. The last response repeats once exhausted.
+func followServer(t *testing.T, bodies ...string) (*httptest.Server, func() []url.Values) {
+	t.Helper()
+	var mu sync.Mutex
+	var queries []url.Values
+	n := 0
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		queries = append(queries, r.URL.Query())
+		body := bodies[min(n, len(bodies)-1)]
+		n++
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+
+	return srv, func() []url.Values {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]url.Values(nil), queries...)
+	}
+}
+
+// runFollow runs a --follow session and stops it once stopAfter has elapsed, by
+// which point the scripted responses have been consumed.
+func runFollow(t *testing.T, srvURL string, stopAfter time.Duration, extra ...string) string {
+	t.Helper()
+	resetState(t)
+
+	args := append([]string{
+		"device", "logs", "dev1", "--follow", "--interval", "20ms",
+		"--org", "acme", "--product", "thermostat",
+		"--uri", srvURL, "--token", "tok",
+	}, extra...)
+
+	var out bytes.Buffer
+	ctx, cancel := context.WithTimeout(context.Background(), stopAfter)
+	defer cancel()
+
+	rootCmd.SetArgs(args)
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&out)
+	// Cancellation is the only way a tail ends; it must exit cleanly.
+	if err := rootCmd.ExecuteContext(ctx); err != nil {
+		t.Fatalf("follow: %v\n%s", err, out.String())
+	}
+	return out.String()
+}
+
+func TestDeviceLogsFollowPrintsInitialThenNewLines(t *testing.T) {
+	initial := `{"data":[
+	  {"timestamp":"2026-08-16T09:14:00.000000Z","level":"info","message":"second"},
+	  {"timestamp":"2026-08-16T09:13:00.000000Z","level":"info","message":"first"}
+	]}`
+	poll := `{"data":[{"timestamp":"2026-08-16T09:15:00.000000Z","level":"warning","message":"third"}]}`
+	srv, queries := followServer(t, initial, poll, `{"data":[]}`)
+
+	out := runFollow(t, srv.URL, 250*time.Millisecond)
+
+	// The initial page arrives newest-first and must be reversed for reading.
+	firstIdx := strings.Index(out, "first")
+	secondIdx := strings.Index(out, "second")
+	thirdIdx := strings.Index(out, "third")
+	if firstIdx < 0 || secondIdx < 0 || thirdIdx < 0 {
+		t.Fatalf("missing lines in output:\n%s", out)
+	}
+	if !(firstIdx < secondIdx && secondIdx < thirdIdx) {
+		t.Errorf("lines should print oldest first, got:\n%s", out)
+	}
+	// The header belongs to the first batch only.
+	if n := strings.Count(out, "TIMESTAMP"); n != 1 {
+		t.Errorf("header printed %d times, want 1", n)
+	}
+
+	q := queries()
+	if len(q) < 2 {
+		t.Fatalf("expected at least 2 requests, got %d", len(q))
+	}
+	if got := q[0].Get("order"); got != "desc" {
+		t.Errorf("initial order = %q, want desc (most recent page)", got)
+	}
+	if got := q[1].Get("order"); got != "asc" {
+		t.Errorf("poll order = %q, want asc", got)
+	}
+	if got := q[1].Get("since"); !strings.HasPrefix(got, "2026-08-16T09:14:00") {
+		t.Errorf("poll should resume from the newest line seen, got since=%q", got)
+	}
+}
+
+// `since` is inclusive, so the boundary line comes back on the next poll. It
+// must not be printed twice, and a different line sharing that timestamp must
+// still be printed.
+func TestDeviceLogsFollowDeduplicatesBoundaryLine(t *testing.T) {
+	initial := `{"data":[{"timestamp":"2026-08-16T09:14:00.000000Z","level":"info","message":"boundary"}]}`
+	poll := `{"data":[
+	  {"timestamp":"2026-08-16T09:14:00.000000Z","level":"info","message":"boundary"},
+	  {"timestamp":"2026-08-16T09:14:00.000000Z","level":"error","message":"same-microsecond"},
+	  {"timestamp":"2026-08-16T09:16:00.000000Z","level":"info","message":"later"}
+	]}`
+	srv, _ := followServer(t, initial, poll, `{"data":[]}`)
+
+	out := runFollow(t, srv.URL, 250*time.Millisecond)
+
+	if n := strings.Count(out, "boundary"); n != 1 {
+		t.Errorf("boundary line printed %d times, want 1:\n%s", n, out)
+	}
+	// A distinct line at the same microsecond must not be lost to dedupe.
+	if !strings.Contains(out, "same-microsecond") {
+		t.Errorf("a different line at the boundary timestamp was dropped:\n%s", out)
+	}
+	if !strings.Contains(out, "later") {
+		t.Errorf("missing the later line:\n%s", out)
+	}
+}
+
+// With no history there is nothing to resume from, so following must start at
+// now rather than replaying the oldest page.
+func TestDeviceLogsFollowWithNoHistoryStartsFromNow(t *testing.T) {
+	srv, queries := followServer(t, `{"data":[]}`)
+
+	_ = runFollow(t, srv.URL, 200*time.Millisecond)
+
+	q := queries()
+	if len(q) < 2 {
+		t.Fatalf("expected a poll after the empty initial page, got %d requests", len(q))
+	}
+	since := q[1].Get("since")
+	if since == "" {
+		t.Fatal("poll must be bounded by since, or it would replay old lines")
+	}
+	ts, err := time.Parse(time.RFC3339Nano, since)
+	if err != nil {
+		t.Fatalf("since %q is not RFC 3339: %v", since, err)
+	}
+	if time.Since(ts) > time.Minute {
+		t.Errorf("since = %q, want roughly now", since)
+	}
+}
+
+func TestDeviceLogsFollowJSONIsOnePerLine(t *testing.T) {
+	initial := `{"data":[{"timestamp":"2026-08-16T09:14:00.000000Z","level":"info","message":"one"}]}`
+	srv, _ := followServer(t, initial, `{"data":[]}`)
+
+	out := runFollow(t, srv.URL, 200*time.Millisecond, "-o", "json")
+
+	// A stream has no closing bracket, so it must not be wrapped in an array.
+	if strings.Contains(out, "[") {
+		t.Errorf("streamed JSON should not be an array, got:\n%s", out)
+	}
+	line := strings.TrimSpace(out)
+	if !strings.HasPrefix(line, "{") || !strings.Contains(line, `"message":"one"`) {
+		t.Errorf("expected one JSON object per line, got:\n%s", out)
+	}
+}
+
+func TestDeviceLogsFollowRejectsConflictingFlags(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"order", []string{"--follow", "--order", "asc"}, "--order cannot be used with --follow"},
+		{"before", []string{"--follow", "--before", "2026-08-16T09:00:00Z"}, "--before cannot be used with --follow"},
+		{"interval without follow", []string{"--interval", "5s"}, "--interval only applies with --follow"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			called := false
+			srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }))
+			defer srv.Close()
+
+			args := append([]string{"device", "logs", "dev1"}, tc.args...)
+			args = append(args, "--org", "acme", "--product", "thermostat", "--uri", srv.URL, "--token", "tok")
+
+			_, err := execCmd(t, "", args...)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("want %q, got %v", tc.want, err)
+			}
+			if called {
+				t.Error("no request should be made for conflicting flags")
 			}
 		})
 	}

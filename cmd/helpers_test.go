@@ -38,6 +38,12 @@ func resetState(t *testing.T) {
 	walk = func(c *cobra.Command) {
 		resetFlagSet(c.PersistentFlags())
 		resetFlagSet(c.Flags())
+		// PersistentPreRunE stores the resolved config on each command's
+		// context, and cobra only inherits the root's context when a command's
+		// own is nil. Left set, a command would keep the previous test's
+		// context — including one already cancelled — and ignore the one passed
+		// to ExecuteContext.
+		c.SetContext(nil)
 		for _, sub := range c.Commands() {
 			walk(sub)
 		}
