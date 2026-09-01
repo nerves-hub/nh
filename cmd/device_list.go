@@ -49,7 +49,34 @@ Use --sort to order the results, e.g. --sort identifier or
 
 Use --filter key:value to narrow the results; repeat it for multiple filters,
 e.g. --filter connection:not_seen --filter tag:prod. Filters are passed
-through to the API as-is, so any server-supported filter works.`,
+through to the API as-is, so any server-supported filter works.
+
+Use --query for the advanced query language from the web UI's search bar.
+Values are quoted; comparisons combine with and/or/not and parentheses.
+Custom health metrics are queried as metric:<key> against each device's
+latest reported reading, with the numeric operators >, >=, < and <=.
+Queryable columns: identifier, search, platform, firmware, architecture,
+connection, connection_type, last_seen, tags, health_status, updates,
+alarm, alarm_status, update_status, deployment_group, deleted, and
+metric:<key>. Input that doesn't look like a query expression is treated
+as a free-text search across the device's textual fields; a query
+expression with a typo is rejected by the server with the parse error.
+--query combines with any --filter flags (results must match both).`,
+	Example: `  # Devices whose latest cpu_temp reading is over 70
+  nh device list --query 'metric:cpu_temp > 70'
+
+  # Connected production devices
+  nh device list --query 'connection = "connected" and tags contains "prod"'
+
+  # Devices that need attention
+  nh device list --query 'health_status != "healthy" or alarm_status = "with"'
+
+  # Low battery on devices that would accept an update
+  nh device list --query 'metric:battery_soc < 20 and updates = "enabled"'
+
+  # Free text: anything that isn't a query expression searches identifier,
+  # firmware version, platform, and tags
+  nh device list --query 'kitchen'`,
 	Args: cobra.NoArgs,
 	RunE: runDeviceList,
 }
@@ -59,6 +86,7 @@ func init() {
 	deviceListCmd.Flags().Int("page-size", 0, "number of devices per page")
 	deviceListCmd.Flags().String("sort", "", "sort by column, e.g. identifier or identifier:desc")
 	deviceListCmd.Flags().StringArray("filter", nil, "filter results as key:value; repeatable, e.g. --filter connection:not_seen")
+	deviceListCmd.Flags().StringP("query", "q", "", `advanced query expression, e.g. 'metric:cpu_temp > 70'`)
 	deviceCmd.AddCommand(deviceListCmd)
 }
 
@@ -135,6 +163,11 @@ func runDeviceList(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
+	advancedQuery, _ := cmd.Flags().GetString("query")
+	if advancedQuery != "" && filters["advanced_query"] != "" {
+		return errors.New("--query and --filter advanced_query:... are the same filter; use one")
+	}
+
 	client, err := newAuthedClient(cfg)
 	if err != nil {
 		return err
@@ -145,6 +178,7 @@ func runDeviceList(cmd *cobra.Command, _ []string) error {
 		PageSize:      pageSize,
 		Sort:          sortColumn,
 		SortDirection: sortDirection,
+		Query:         advancedQuery,
 		Filters:       filters,
 	})
 	if err != nil {
