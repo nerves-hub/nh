@@ -87,6 +87,11 @@ type ListDevicesOptions struct {
 	// Sort is the column to order by; SortDirection is "asc" or "desc".
 	Sort          string
 	SortDirection string
+	// Query is an expression in the server's advanced query language (the
+	// same one the web UI's search bar uses), sent as
+	// filters[advanced_query]. It takes precedence over an advanced_query
+	// key in Filters.
+	Query string
 	// Filters are passed through verbatim as filters[key]=value, so new
 	// server-side filters work without client changes.
 	Filters map[string]string
@@ -125,6 +130,9 @@ func (c *Client) ListDevices(ctx context.Context, org, product string, opts List
 	// convention: filters[key]=value.
 	for key, value := range opts.Filters {
 		query.Set("filters["+key+"]", value)
+	}
+	if opts.Query != "" {
+		query.Set("filters[advanced_query]", opts.Query)
 	}
 
 	var result DeviceList

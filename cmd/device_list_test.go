@@ -222,6 +222,63 @@ func TestDeviceListFilters(t *testing.T) {
 	}
 }
 
+func TestDeviceListAdvancedQuery(t *testing.T) {
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query().Get("filters[advanced_query]")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	defer srv.Close()
+
+	query := `metric:cpu_temp > 70 and connection = "connected"`
+	_, err := execCmd(t, "",
+		"device", "list",
+		"--org", "acme", "--product", "thermostat",
+		"--query", query,
+		"--uri", srv.URL, "--token", "tok",
+	)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	// The expression is sent verbatim as the advanced_query filter.
+	if gotQuery != query {
+		t.Errorf("query param: want %q, got %q", query, gotQuery)
+	}
+}
+
+func TestDeviceListQueryConflictsWithAdvancedQueryFilter(t *testing.T) {
+	_, err := execCmd(t, "",
+		"device", "list",
+		"--org", "acme", "--product", "thermostat",
+		"--query", "metric:cpu_temp > 70",
+		"--filter", "advanced_query:something",
+		"--uri", "https://example.com", "--token", "tok",
+	)
+	if err == nil || !strings.Contains(err.Error(), "use one") {
+		t.Errorf("expected conflict error, got %v", err)
+	}
+}
+
+func TestDeviceListInvalidQueryShowsServerError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_, _ = w.Write([]byte(`{"errors":{"detail":"invalid advanced query: \"bogus\" is not a valid column (at character 0)"}}`))
+	}))
+	defer srv.Close()
+
+	_, err := execCmd(t, "",
+		"device", "list",
+		"--org", "acme", "--product", "thermostat",
+		"--query", `bogus = "x"`,
+		"--uri", srv.URL, "--token", "tok",
+	)
+	if err == nil || !strings.Contains(err.Error(), "not a valid column") {
+		t.Errorf("expected the server's parse error to surface, got %v", err)
+	}
+}
+
 func TestDeviceListInvalidFilter(t *testing.T) {
 	_, err := execCmd(t, "",
 		"device", "list",
