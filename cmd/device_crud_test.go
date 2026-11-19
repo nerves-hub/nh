@@ -78,6 +78,10 @@ func TestDeviceUpdate(t *testing.T) {
 	if dev["updates_enabled"] != false {
 		t.Errorf("updates_enabled should be false, got %v", dev["updates_enabled"])
 	}
+	// Current servers read update_mode, not updates_enabled.
+	if dev["update_mode"] != "off" {
+		t.Errorf("update_mode should be off, got %v", dev["update_mode"])
+	}
 	if _, present := dev["identifier"]; present {
 		t.Errorf("identifier should not be in an update body, got %+v", dev)
 	}
@@ -129,5 +133,49 @@ func TestDeviceDeleteAbortsWithoutConfirmation(t *testing.T) {
 	)
 	if err == nil || !strings.Contains(err.Error(), "without confirmation") {
 		t.Errorf("expected confirmation guard, got %v", err)
+	}
+}
+
+func TestDeviceUpdateMode(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"identifier":"dev-001","connection_status":"online","update_mode":"device_managed"}}`))
+	}))
+	defer srv.Close()
+
+	_, err := execCmd(t, "",
+		"device", "update", "dev-001", "--update-mode", "device_managed",
+		"--org", "acme", "--product", "thermostat",
+		"--uri", srv.URL, "--token", "tok",
+	)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	dev, ok := gotBody["device"].(map[string]any)
+	if !ok {
+		t.Fatalf("body should be wrapped in device, got %+v", gotBody)
+	}
+	if dev["update_mode"] != "device_managed" {
+		t.Errorf("update_mode should be device_managed, got %v", dev["update_mode"])
+	}
+	// Also at the top level, which older servers read instead.
+	if gotBody["update_mode"] != "device_managed" {
+		t.Errorf("top-level update_mode should be device_managed, got %v", gotBody["update_mode"])
+	}
+	if _, present := dev["updates_enabled"]; present {
+		t.Errorf("updates_enabled should not be sent, got %+v", dev)
+	}
+}
+
+func TestDeviceUpdateModeInvalid(t *testing.T) {
+	_, err := execCmd(t, "",
+		"device", "update", "dev-001", "--update-mode", "sometimes",
+		"--org", "acme", "--product", "thermostat",
+		"--token", "tok", "--uri", "https://example.com",
+	)
+	if err == nil || !strings.Contains(err.Error(), "invalid --update-mode") {
+		t.Errorf("want an invalid --update-mode error, got %v", err)
 	}
 }

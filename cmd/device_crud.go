@@ -25,6 +25,8 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/nerves-hub/nh/internal/api"
 	"github.com/nerves-hub/nh/internal/config"
@@ -45,7 +47,12 @@ var deviceUpdateCmd = &cobra.Command{
 	Use:   "update <identifier>",
 	Short: "Update a device",
 	Long: `Update a device. Only the fields you pass are changed: --description,
---tag (repeatable), --updates-enabled, --deployment-group-id.`,
+--tag (repeatable), --update-mode, --updates-enabled, --deployment-group-id.
+
+--update-mode is off, automatic or device_managed. NervesHub replaced
+updates_enabled with update_mode and ignores updates_enabled on current
+servers, so --updates-enabled also sends the matching update_mode
+(true: automatic, false: off).`,
 	Args: deviceIdentifierArgs,
 	RunE: runDeviceUpdate,
 }
@@ -54,15 +61,19 @@ func init() {
 	for _, c := range []*cobra.Command{deviceCreateCmd, deviceUpdateCmd} {
 		c.Flags().String("description", "", "device description")
 		c.Flags().StringArray("tag", nil, "device tag; repeatable")
-		c.Flags().Bool("updates-enabled", false, "whether firmware updates are enabled")
+		c.Flags().String("update-mode", "", "firmware update mode: off, automatic or device_managed")
+		c.Flags().Bool("updates-enabled", false, "whether firmware updates are enabled (also sends update_mode: automatic or off)")
 		c.Flags().Int("deployment-group-id", 0, "deployment group ID to assign")
 		deviceCmd.AddCommand(c)
 	}
 }
 
+// updateModes are the values NervesHub accepts for a device's update_mode.
+var updateModes = []string{"off", "automatic", "device_managed"}
+
 // deviceInputFromFlags reads the device write flags, returning the input and
 // whether any field was provided.
-func deviceInputFromFlags(cmd *cobra.Command) (api.DeviceInput, bool) {
+func deviceInputFromFlags(cmd *cobra.Command) (api.DeviceInput, bool, error) {
 	var in api.DeviceInput
 	changed := false
 	if cmd.Flags().Changed("description") {
@@ -76,6 +87,19 @@ func deviceInputFromFlags(cmd *cobra.Command) (api.DeviceInput, bool) {
 	if cmd.Flags().Changed("updates-enabled") {
 		v, _ := cmd.Flags().GetBool("updates-enabled")
 		in.UpdatesEnabled = &v
+		// Current servers ignore updates_enabled; update_mode is what they read.
+		in.UpdateMode = "off"
+		if v {
+			in.UpdateMode = "automatic"
+		}
+		changed = true
+	}
+	if cmd.Flags().Changed("update-mode") {
+		mode := mustString(cmd, "update-mode")
+		if !slices.Contains(updateModes, mode) {
+			return in, changed, fmt.Errorf("invalid --update-mode %q: use %s", mode, strings.Join(updateModes, ", "))
+		}
+		in.UpdateMode = mode
 		changed = true
 	}
 	if cmd.Flags().Changed("deployment-group-id") {
@@ -83,7 +107,7 @@ func deviceInputFromFlags(cmd *cobra.Command) (api.DeviceInput, bool) {
 		in.DeploymentGroupID = &v
 		changed = true
 	}
-	return in, changed
+	return in, changed, nil
 }
 
 func runDeviceCreate(cmd *cobra.Command, args []string) error {
@@ -95,7 +119,10 @@ func runDeviceCreate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	in, _ := deviceInputFromFlags(cmd)
+	in, _, err := deviceInputFromFlags(cmd)
+	if err != nil {
+		return err
+	}
 
 	client, err := newAuthedClient(cfg)
 	if err != nil {
@@ -124,9 +151,12 @@ func runDeviceUpdate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	in, changed := deviceInputFromFlags(cmd)
+	in, changed, err := deviceInputFromFlags(cmd)
+	if err != nil {
+		return err
+	}
 	if !changed {
-		return errors.New("nothing to update: provide --description, --tag, --updates-enabled, or --deployment-group-id")
+		return errors.New("nothing to update: provide --description, --tag, --update-mode, --updates-enabled, or --deployment-group-id")
 	}
 
 	client, err := newAuthedClient(cfg)
