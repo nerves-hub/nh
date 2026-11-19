@@ -42,6 +42,7 @@ type Device struct {
 	OrgName             string            `json:"org_name"`
 	ProductName         string            `json:"product_name"`
 	UpdatesEnabled      bool              `json:"updates_enabled"`
+	UpdateMode          string            `json:"update_mode,omitempty"`
 	UpdatesBlockedUntil *Timestamp        `json:"updates_blocked_until,omitempty"`
 	LastCommunication   *Timestamp        `json:"last_communication,omitempty"`
 	FirmwareMetadata    *FirmwareMetadata `json:"firmware_metadata,omitempty"`
@@ -205,6 +206,7 @@ type DeviceInput struct {
 	Description       string
 	Tags              []string
 	UpdatesEnabled    *bool
+	UpdateMode        string
 	DeploymentGroupID *int
 }
 
@@ -215,6 +217,7 @@ type deviceBody struct {
 	Description       string `json:"description,omitempty"`
 	Tags              string `json:"tags,omitempty"`
 	UpdatesEnabled    *bool  `json:"updates_enabled,omitempty"`
+	UpdateMode        string `json:"update_mode,omitempty"`
 	DeploymentGroupID *int   `json:"deployment_group_id,omitempty"`
 }
 
@@ -223,6 +226,7 @@ func (in DeviceInput) body(identifier string) deviceBody {
 		Identifier:        identifier,
 		Description:       in.Description,
 		UpdatesEnabled:    in.UpdatesEnabled,
+		UpdateMode:        in.UpdateMode,
 		DeploymentGroupID: in.DeploymentGroupID,
 	}
 	if len(in.Tags) > 0 {
@@ -258,9 +262,14 @@ func (c *Client) UpdateDevice(ctx context.Context, org, product, identifier stri
 	if err := requireDeviceScope(org, product, identifier); err != nil {
 		return nil, err
 	}
+	// The fields go both at the top level and under "device": servers before
+	// nerves_hub_web's device_params/1 read update_mode (and tags) only from
+	// the top level, and accept a wrapped one with 201 without applying it.
+	fields := in.body("")
 	body := struct {
+		deviceBody
 		Device deviceBody `json:"device"`
-	}{Device: in.body("")}
+	}{deviceBody: fields, Device: fields}
 
 	var resp struct {
 		Data Device `json:"data"`
