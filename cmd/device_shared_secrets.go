@@ -179,8 +179,7 @@ func runDeviceSharedSecretCreate(cmd *cobra.Command, args []string) error {
 			return err
 		}
 	}
-	warnSecretShownOnce(cmd, secret)
-	return nil
+	return warnSecretShownOnce(cmd, identifier, secret)
 }
 
 // printSharedSecret prints a newly created shared secret's key and, when the
@@ -196,14 +195,15 @@ func printSharedSecret(w io.Writer, secret *api.DeviceSharedSecret) error {
 
 // warnSecretShownOnce tells the user, on stderr, that a new secret can't be
 // fetched again. It goes to stderr so that stdout stays just the result (or
-// the JSON) for anything reading it.
-func warnSecretShownOnce(cmd *cobra.Command, secret *api.DeviceSharedSecret) {
-	errw := cmd.ErrOrStderr()
-	if secret.Secret != "" {
-		fmt.Fprintln(errw, "\nSave the secret now: it cannot be fetched again.")
-	} else {
-		fmt.Fprintln(errw, "\nThe server did not return the secret, and it cannot be fetched later.")
+// the JSON) for anything reading it. A key that came back without its secret
+// is useless, since the secret can't be fetched later, so that is an error.
+func warnSecretShownOnce(cmd *cobra.Command, identifier string, secret *api.DeviceSharedSecret) error {
+	if secret.Secret == "" {
+		return fmt.Errorf("the server returned shared secret %s for device %s without its secret, which cannot be fetched later; "+
+			"deactivate it with `nh device shared-secrets delete %s %s` and create another", secret.Key, identifier, identifier, secret.Key)
 	}
+	fmt.Fprintln(cmd.ErrOrStderr(), "\nSave the secret now: it cannot be fetched again.")
+	return nil
 }
 
 // ── delete ──────────────────────────────────────────────────────────────────

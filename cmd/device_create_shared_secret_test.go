@@ -175,3 +175,31 @@ func TestDeviceUpdateHasNoSharedSecretFlag(t *testing.T) {
 		t.Errorf("update should not take --shared-secret, got %v", err)
 	}
 }
+
+func TestDeviceCreateSharedSecretWithoutSecretValue(t *testing.T) {
+	srv, _ := deviceCreateServer(t, http.StatusCreated, `{"data":{"identifier":"dev-001","connection_status":"not_seen",
+	"shared_secret":{"key":"nhd_new","deactivated_at":null,"last_used":null,"inserted_at":"2026-11-22T12:00:00Z"}}}`)
+
+	_, err := execCmd(t, "",
+		"device", "create", "dev-001", "--shared-secret",
+		"--org", "acme", "--product", "thermostat",
+		"--uri", srv.URL, "--token", "tok",
+	)
+	if err == nil || !strings.Contains(err.Error(), "without its secret") {
+		t.Errorf("want an error for a key without its secret, got %v", err)
+	}
+}
+
+func TestDeviceCreateSharedSecretHintUsesArgument(t *testing.T) {
+	// No identifier in the response: the hint still names the device.
+	srv, _ := deviceCreateServer(t, http.StatusCreated, `{"data":{"connection_status":"not_seen"}}`)
+
+	_, err := execCmd(t, "",
+		"device", "create", "dev-001", "--shared-secret",
+		"--org", "acme", "--product", "thermostat",
+		"--uri", srv.URL, "--token", "tok",
+	)
+	if err == nil || !strings.Contains(err.Error(), "nh device shared-secrets create dev-001") {
+		t.Errorf("hint should use the identifier argument, got %v", err)
+	}
+}

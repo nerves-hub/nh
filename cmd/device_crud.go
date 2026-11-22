@@ -253,7 +253,7 @@ func runDeviceCreate(cmd *cobra.Command, args []string) error {
 	}
 	// Print the secret before checking the other fields, so a field that
 	// wasn't applied can never hide the only copy of the secret.
-	secretErr := showCreatedSharedSecret(cmd, cfg, in, device)
+	secretErr := showCreatedSharedSecret(cmd, cfg, identifier, in, device)
 	if err := checkApplied(in, device); err != nil {
 		return errors.Join(secretErr, fmt.Errorf("created device %s, but %w", identifier, err))
 	}
@@ -265,13 +265,13 @@ func runDeviceCreate(cmd *cobra.Command, args []string) error {
 // "shared_secret", so only the warning is added. A server that ignores
 // "shared_secret" (one from before NervesHub added it) still creates the
 // device, without credentials, which is reported as an error.
-func showCreatedSharedSecret(cmd *cobra.Command, cfg *config.Config, in api.DeviceInput, device *api.Device) error {
+func showCreatedSharedSecret(cmd *cobra.Command, cfg *config.Config, identifier string, in api.DeviceInput, device *api.Device) error {
 	if !in.SharedSecret {
 		return nil
 	}
 	if device.SharedSecret == nil {
 		return fmt.Errorf("created device %s, but the server returned no shared secret, so it may not support --shared-secret; "+
-			"create one with `nh device shared-secrets create %s`", device.Identifier, device.Identifier)
+			"create one with `nh device shared-secrets create %s`", identifier, identifier)
 	}
 	if cfg.Output != config.OutputJSON {
 		w := cmd.OutOrStdout()
@@ -280,8 +280,7 @@ func showCreatedSharedSecret(cmd *cobra.Command, cfg *config.Config, in api.Devi
 			return err
 		}
 	}
-	warnSecretShownOnce(cmd, device.SharedSecret)
-	return nil
+	return warnSecretShownOnce(cmd, identifier, device.SharedSecret)
 }
 
 func runDeviceUpdate(cmd *cobra.Command, args []string) error {
