@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/nerves-hub/nh/internal/api"
+	"github.com/nerves-hub/nh/internal/browser"
 	"github.com/nerves-hub/nh/internal/config"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -41,34 +42,62 @@ import (
 // errLoginCancelled is the cancellation cause when the user aborts login.
 var errLoginCancelled = errors.New("login cancelled")
 
-// spaceDigits renders a numeric code with a space between each digit, e.g.
-// 438231 -> "4 3 8 2 3 1", to make it easier to read aloud and compare.
-func spaceDigits(code int) string {
-	return strings.Join(strings.Split(strconv.Itoa(code), ""), " ")
+// formatLoginCode renders the confirmation code the user types into the web
+// page in groups of four digits, e.g. 31281247 -> "3128 1247". The page
+// ignores spaces and dashes, so the code can be typed as shown.
+func formatLoginCode(code int) string {
+	digits := strconv.Itoa(code)
+	var b strings.Builder
+	for i, r := range digits {
+		if i > 0 && (len(digits)-i)%4 == 0 {
+			b.WriteByte(' ')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
-// CLI login polling cadence and overall deadline. They are package vars so
-// tests can shorten them.
+// CLI login polling. They are package vars so tests can shorten them. The
+// timeout matches how long the server keeps a login waiting.
 var (
-	cliPollInterval = 2 * time.Second
-	cliPollTimeout  = 5 * time.Minute
+	cliPollOptions = api.CLIPollOptions{}
+	cliPollTimeout = 5 * time.Minute
 )
 
-// userLoginCmd implements `nh user login`: a browser-confirmation login that
-// avoids entering a password.
+// openBrowser opens a URL in the user's browser. Tests replace it.
+var openBrowser = browser.Open
+
+// stdoutIsTerminal reports whether the command's stdout is an interactive
+// terminal. Tests replace it.
+var stdoutIsTerminal = func(cmd *cobra.Command) bool {
+	f, ok := cmd.OutOrStdout().(*os.File)
+	return ok && term.IsTerminal(int(f.Fd()))
+}
+
+var loginNoBrowser bool
+
+// userLoginCmd implements `nh user login`: sign in on the web and type in a
+// code, which avoids entering a password in the terminal.
 var userLoginCmd = &cobra.Command{
 	Use:   "login",
-	Short: "Authenticate by confirming in your browser",
-	Long: `Authenticate without entering your password.
+	Short: "Authenticate by signing in on the web and entering a code",
+	Long: `Authenticate without entering your password in the terminal.
 
-nh starts a login session and prints a URL. Open it in your browser and
-confirm the login; nh waits for the confirmation and then saves your API
-token to the settings file (default ~/.nh/settings.json).`,
+nh starts a login and shows a URL and an eight-digit code. Open the URL, sign
+in to NervesHub, and enter the code there. nh waits for you to confirm, then
+saves your API token to the settings file (default ~/.nh/settings.json).
+
+When stdout is a terminal, nh opens the URL in your browser for you; pass
+--no-browser to stop it. It never does with --non-interactive, or when there
+is no display (such as over SSH). The URL is always printed too.
+
+The code lasts five minutes.`,
 	Args: cobra.NoArgs,
 	RunE: runUserLogin,
 }
 
 func init() {
+	userLoginCmd.Flags().BoolVar(&loginNoBrowser, "no-browser", false, "don't open the login URL in a browser")
 	userCmd.AddCommand(userLoginCmd)
 }
 
@@ -88,18 +117,34 @@ func runUserLogin(cmd *cobra.Command, _ []string) error {
 	if session.URL == "" || session.Token == "" {
 		return errors.New("login session response was incomplete")
 	}
+	// The URL is printed and opened, so it has to be a plain web address: a
+	// control character could rewrite the terminal, and the openers also run
+	// files and apps.
+	if !browser.IsWebURL(session.URL) {
+		return fmt.Errorf("login session response had an invalid URL %q", session.URL)
+	}
+	if session.ConfirmationCode <= 0 {
+		return errors.New("login session response had no confirmation code, which is needed to finish signing in")
+	}
 
 	w := cmd.OutOrStdout()
-	fmt.Fprintf(w, "To authenticate, open the following URL in your browser and confirm the login:\n\n    %s\n", session.URL)
-	if session.ConfirmationCode != 0 {
-		fmt.Fprintf(w, "\n    Confirmation code: %s\n", spaceDigits(session.ConfirmationCode))
-		fmt.Fprintln(w, "\n    Check that this code matches the one shown in your browser.")
+	fmt.Fprintf(w, "To sign in, open this URL in your browser and sign in to NervesHub:\n\n    %s\n", session.URL)
+	fmt.Fprintf(w, "\nThen enter this code:\n\n    %s\n", formatLoginCode(session.ConfirmationCode))
+	fmt.Fprintln(w, "\nThe code expires in five minutes.")
+
+	if !loginNoBrowser && !cfg.NonInteractive && stdoutIsTerminal(cmd) {
+		if err := openBrowser(session.URL); err == nil {
+			fmt.Fprintln(w, "\nOpened the URL in your browser.")
+		} else if !errors.Is(err, browser.ErrNoDisplay) {
+			fmt.Fprintf(cmd.ErrOrStderr(), "\nCouldn't open a browser (%v); open the URL yourself.\n", err)
+		}
 	}
+
 	hint := ""
 	if stdinIsTerminal(cmd) {
 		hint = " (press Esc to cancel)"
 	}
-	fmt.Fprintf(w, "\nWaiting for confirmation...%s\n", hint)
+	fmt.Fprintf(w, "\nWaiting for you to enter the code...%s\n", hint)
 
 	deadlineCtx, cancelTimeout := context.WithTimeout(cmd.Context(), cliPollTimeout)
 	defer cancelTimeout()
@@ -109,7 +154,7 @@ func runUserLogin(cmd *cobra.Command, _ []string) error {
 	// Let the user abort by pressing Esc (or Ctrl-C) while we wait.
 	restore := watchForCancel(cmd, cancel)
 
-	userToken, err := pollCLISession(ctx, client, session.Token)
+	userToken, err := client.WaitForCLISession(ctx, session.Token, cliPollOptions)
 	restore() // restore the terminal before printing anything else
 
 	if err != nil {
@@ -117,43 +162,46 @@ func runUserLogin(cmd *cobra.Command, _ []string) error {
 			fmt.Fprintln(w, "\nLogin cancelled.")
 			return nil
 		}
+		if errors.Is(err, api.ErrCLISessionExpired) {
+			return fmt.Errorf("%w; run `nh user login` again", err)
+		}
 		return err
+	}
+
+	// Check the token works, and show whose it is, before saving it. The login
+	// has already succeeded, so a failure here only warns.
+	who := ""
+	if authed, err := api.NewClient(cfg.URI, userToken, api.WithUserAgent(userAgent())); err == nil {
+		if user, err := authed.CurrentUser(cmd.Context()); err == nil {
+			who = describeUser(user)
+		} else {
+			fmt.Fprintf(cmd.ErrOrStderr(), "\nWarning: signed in, but couldn't look up the account for the new token: %v\n", err)
+		}
 	}
 
 	if err := config.SaveToken(cfg.DataDir, userToken); err != nil {
 		return err
 	}
 
-	fmt.Fprintf(w, "\nSuccessfully authenticated\nToken saved to %s\n", config.SettingsFilePath(cfg.DataDir))
+	if who != "" {
+		fmt.Fprintf(w, "\nSuccessfully authenticated as %s\n", who)
+	} else {
+		fmt.Fprintln(w, "\nSuccessfully authenticated")
+	}
+	fmt.Fprintf(w, "Token saved to %s\n", config.SettingsFilePath(cfg.DataDir))
 	return nil
 }
 
-// pollCLISession polls the session until it is ready, returning the user token.
-func pollCLISession(ctx context.Context, client *api.Client, token string) (string, error) {
-	ticker := time.NewTicker(cliPollInterval)
-	defer ticker.Stop()
-
-	for {
-		status, err := client.CheckCLISession(ctx, token)
-		if err != nil {
-			// The deadline can elapse mid-request; report it uniformly.
-			if ctx.Err() != nil {
-				return "", fmt.Errorf("timed out waiting for login confirmation: %w", ctx.Err())
-			}
-			return "", err
-		}
-		if status.Status == "ready" {
-			if status.UserToken == "" {
-				return "", errors.New("login confirmed but no token was returned")
-			}
-			return status.UserToken, nil
-		}
-
-		select {
-		case <-ctx.Done():
-			return "", fmt.Errorf("timed out waiting for login confirmation: %w", ctx.Err())
-		case <-ticker.C:
-		}
+// describeUser names a user for a sign-in message: "Name <email>", or
+// whichever of the two is set.
+func describeUser(u *api.User) string {
+	switch {
+	case u.Name != "" && u.Email != "":
+		return fmt.Sprintf("%s <%s>", u.Name, u.Email)
+	case u.Name != "":
+		return u.Name
+	default:
+		return u.Email
 	}
 }
 

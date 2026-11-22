@@ -25,20 +25,21 @@ package cmd
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"text/tabwriter"
 
 	"github.com/nerves-hub/nh/internal/api"
 	"github.com/nerves-hub/nh/internal/config"
 	"github.com/nerves-hub/nh/internal/mix"
+	"github.com/nerves-hub/nh/internal/tokennote"
 	"github.com/spf13/cobra"
 )
 
 // tokenNote is the human-readable label recorded with an issued API token: the
-// app, its version, and the local hostname (e.g. "nh 1.2.3 (my-host)").
+// app, its version, and the local hostname (e.g. "nh 1.2.3 (my-host)"),
+// cleaned up to meet the server's rules for notes.
 func tokenNote() string {
-	return fmt.Sprintf("nh %s (%s)", version, hostname())
+	return tokennote.Build(version, hostname())
 }
 
 // exactlyOneArg returns a cobra Args validator requiring exactly one argument,

@@ -63,7 +63,7 @@ built, so neither needs anything extra.
 If you are using NervesCloud, all you need to do is authenticate and then point `nh` at the organization and product you work with most:
 
 ```sh
-# Sign in by confirming in your browser (recommended)
+# Sign in on the web and enter the code nh shows (recommended)
 nh user login
 
 # ...or sign in with email and password
@@ -117,7 +117,9 @@ variable — see [Configuration](#configuration)):
 ### Command reference
 
 **`nh user`** — authenticate and inspect the current user
-- `login` — authenticate by confirming in your browser
+- `login` — authenticate by signing in on the web and entering the eight-digit
+  code `nh` shows; it opens the URL in your browser when run in a terminal
+  (`--no-browser` to stop that), and the code lasts five minutes
 - `auth` — sign in with email and password and save an API token
 - `logout` — remove the saved API token
 - `whoami` — show the currently authenticated user
