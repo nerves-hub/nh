@@ -32,23 +32,39 @@ import (
 	"strings"
 )
 
-// Device is a device within a product, as returned by
-// GET /api/orgs/{org}/products/{product}/devices.
+// Device is a device within a product, as NervesHubWeb.API.DeviceJSON
+// renders it for GET /api/orgs/{org}/products/{product}/devices and the
+// single-device endpoints.
 type Device struct {
-	Identifier          string            `json:"identifier"`
-	ConnectionStatus    string            `json:"connection_status"`
-	Online              string            `json:"online"`
-	Description         string            `json:"description"`
-	Tags                []string          `json:"tags"`
-	Version             string            `json:"version"`
-	OrgName             string            `json:"org_name"`
-	ProductName         string            `json:"product_name"`
-	UpdatesEnabled      bool              `json:"updates_enabled"`
-	UpdateMode          string            `json:"update_mode,omitempty"`
-	UpdatesBlockedUntil *Timestamp        `json:"updates_blocked_until,omitempty"`
-	LastCommunication   *Timestamp        `json:"last_communication,omitempty"`
-	FirmwareMetadata    *FirmwareMetadata `json:"firmware_metadata,omitempty"`
-	DeploymentGroup     *DeploymentGroup  `json:"deployment_group,omitempty"`
+	Identifier string `json:"identifier"`
+	// ConnectionStatus is the latest connection's status: "connecting",
+	// "connected" or "disconnected", or "not_seen" for a device that has
+	// never connected.
+	ConnectionStatus string `json:"connection_status"`
+	// Online is the same status string as ConnectionStatus, not a boolean.
+	Online      string   `json:"online"`
+	Description string   `json:"description"`
+	Tags        []string `json:"tags"`
+	// Version is the running firmware's version, or "unknown".
+	Version     string `json:"version"`
+	OrgName     string `json:"org_name"`
+	ProductName string `json:"product_name"`
+	// UpdatesEnabled is update_mode != "off"; UpdateMode says more.
+	UpdatesEnabled bool `json:"updates_enabled"`
+	// UpdateMode is "off", "automatic" or "device_managed".
+	UpdateMode string `json:"update_mode,omitempty"`
+	// ManagedUpdatesAllowed is whether the device may put itself into
+	// device_managed mode. It is nil from servers that don't send it.
+	ManagedUpdatesAllowed *bool      `json:"managed_updates_allowed,omitempty"`
+	UpdatesBlockedUntil   *Timestamp `json:"updates_blocked_until,omitempty"`
+	// LastCommunication is when the latest connection was last seen. The
+	// server sends "never" for a device that has never connected, which
+	// decodes as the zero time.
+	LastCommunication *Timestamp        `json:"last_communication,omitempty"`
+	FirmwareMetadata  *FirmwareMetadata `json:"firmware_metadata,omitempty"`
+	DeploymentGroup   *DeploymentGroup  `json:"deployment_group,omitempty"`
+	// Deleted is true for a soft-deleted device.
+	Deleted bool `json:"deleted"`
 }
 
 // FirmwareMetadata describes the firmware currently running on a device.
@@ -240,31 +256,49 @@ func requireDeviceScope(org, product, identifier string) error {
 	return nil
 }
 
-// DeviceInput holds the writable fields of a device. Empty/nil fields are
-// omitted, so it serves both create and partial update.
+// DeviceInput holds the fields a device create or update can set. A nil field
+// is left out of the body, so an update changes only the fields that are set.
+//
+// These are every field NervesHub reads from the body: Device.create_changeset
+// and Device.update_changeset cast description, tags and connecting_code,
+// create_changeset also casts update_mode, and the DeviceController reads
+// update_mode (on update) and managed_updates_allowed (on both) itself. The
+// API has no field for a device's deployment group.
 type DeviceInput struct {
-	Description       string
-	Tags              []string
-	UpdateMode        string
-	DeploymentGroupID *int
+	// Description is the device's description; "" clears it.
+	Description *string
+	// Tags are sent as one comma-separated string, which NervesHub splits on
+	// commas. Empty means tags are left unchanged.
+	Tags []string
+	// UpdateMode is "off", "automatic" or "device_managed"; "" leaves it
+	// unchanged.
+	UpdateMode string
+	// ManagedUpdatesAllowed is whether the device may put itself into
+	// device_managed mode.
+	ManagedUpdatesAllowed *bool
+	// ConnectingCode is Elixir code the device runs each time it connects;
+	// "" clears it. The API never returns it.
+	ConnectingCode *string
 }
 
 // deviceBody is the JSON shape of a device write. Identifier is only used on
 // create. tags are sent as a comma-separated string, as the API expects.
 type deviceBody struct {
-	Identifier        string `json:"identifier,omitempty"`
-	Description       string `json:"description,omitempty"`
-	Tags              string `json:"tags,omitempty"`
-	UpdateMode        string `json:"update_mode,omitempty"`
-	DeploymentGroupID *int   `json:"deployment_group_id,omitempty"`
+	Identifier            string  `json:"identifier,omitempty"`
+	Description           *string `json:"description,omitempty"`
+	Tags                  string  `json:"tags,omitempty"`
+	UpdateMode            string  `json:"update_mode,omitempty"`
+	ManagedUpdatesAllowed *bool   `json:"managed_updates_allowed,omitempty"`
+	ConnectingCode        *string `json:"connecting_code,omitempty"`
 }
 
 func (in DeviceInput) body(identifier string) deviceBody {
 	b := deviceBody{
-		Identifier:        identifier,
-		Description:       in.Description,
-		UpdateMode:        in.UpdateMode,
-		DeploymentGroupID: in.DeploymentGroupID,
+		Identifier:            identifier,
+		Description:           in.Description,
+		UpdateMode:            in.UpdateMode,
+		ManagedUpdatesAllowed: in.ManagedUpdatesAllowed,
+		ConnectingCode:        in.ConnectingCode,
 	}
 	if len(in.Tags) > 0 {
 		b.Tags = strings.Join(in.Tags, ",")
@@ -285,8 +319,9 @@ func (in DeviceInput) writeBody(identifier string) deviceWriteBody {
 }
 
 // CreateDevice registers a device via
-// POST /orgs/{org}/products/{product}/devices/{identifier}, with the body
-// wrapped in a "device" key (see deviceWriteBody).
+// POST /orgs/{org}/products/{product}/devices, with the identifier and the
+// other fields in the body under a "device" key (see deviceWriteBody). The
+// server answers 201 Created with the new device.
 func (c *Client) CreateDevice(ctx context.Context, org, product, identifier string, in DeviceInput) (*Device, error) {
 	if err := requireDeviceScope(org, product, identifier); err != nil {
 		return nil, err
@@ -296,7 +331,8 @@ func (c *Client) CreateDevice(ctx context.Context, org, product, identifier stri
 	var resp struct {
 		Data Device `json:"data"`
 	}
-	if err := c.Post(ctx, devicePath(org, product, identifier), body, &resp); err != nil {
+	path := "/orgs/" + url.PathEscape(org) + "/products/" + url.PathEscape(product) + "/devices"
+	if err := c.Post(ctx, path, body, &resp); err != nil {
 		return nil, err
 	}
 	return &resp.Data, nil
@@ -304,7 +340,8 @@ func (c *Client) CreateDevice(ctx context.Context, org, product, identifier stri
 
 // UpdateDevice updates a device via
 // PUT /orgs/{org}/products/{product}/devices/{identifier}. The body is wrapped
-// in a "device" key and only the supplied fields are changed.
+// in a "device" key and only the supplied fields are changed. The server
+// answers 201, not 200, with the updated device.
 func (c *Client) UpdateDevice(ctx context.Context, org, product, identifier string, in DeviceInput) (*Device, error) {
 	if err := requireDeviceScope(org, product, identifier); err != nil {
 		return nil, err
