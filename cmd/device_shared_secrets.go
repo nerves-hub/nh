@@ -25,6 +25,7 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 
 	"github.com/nerves-hub/nh/internal/api"
@@ -167,31 +168,42 @@ func runDeviceSharedSecretCreate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	w, errw := cmd.OutOrStdout(), cmd.ErrOrStderr()
+	w := cmd.OutOrStdout()
 	if cfg.Output == config.OutputJSON {
 		if err := printJSON(w, secret); err != nil {
 			return err
 		}
 	} else {
 		fmt.Fprintf(w, "Created shared secret for device %s\n", identifier)
-		tw := newTableWriter(w)
-		fmt.Fprintf(tw, "Key:\t%s\n", secret.Key)
-		if secret.Secret != "" {
-			fmt.Fprintf(tw, "Secret:\t%s\n", secret.Secret)
-		}
-		if err := tw.Flush(); err != nil {
+		if err := printSharedSecret(w, secret); err != nil {
 			return err
 		}
 	}
+	warnSecretShownOnce(cmd, secret)
+	return nil
+}
 
-	// The note goes to stderr so that stdout stays just the key and secret
-	// (or the JSON) for anything reading it.
+// printSharedSecret prints a newly created shared secret's key and, when the
+// server returned it, the secret.
+func printSharedSecret(w io.Writer, secret *api.DeviceSharedSecret) error {
+	tw := newTableWriter(w)
+	fmt.Fprintf(tw, "Key:\t%s\n", secret.Key)
+	if secret.Secret != "" {
+		fmt.Fprintf(tw, "Secret:\t%s\n", secret.Secret)
+	}
+	return tw.Flush()
+}
+
+// warnSecretShownOnce tells the user, on stderr, that a new secret can't be
+// fetched again. It goes to stderr so that stdout stays just the result (or
+// the JSON) for anything reading it.
+func warnSecretShownOnce(cmd *cobra.Command, secret *api.DeviceSharedSecret) {
+	errw := cmd.ErrOrStderr()
 	if secret.Secret != "" {
 		fmt.Fprintln(errw, "\nSave the secret now: it cannot be fetched again.")
 	} else {
 		fmt.Fprintln(errw, "\nThe server did not return the secret, and it cannot be fetched later.")
 	}
-	return nil
 }
 
 // ── delete ──────────────────────────────────────────────────────────────────

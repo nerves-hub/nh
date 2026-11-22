@@ -184,7 +184,9 @@ variable — see [Configuration](#configuration)):
   (repeatable), `--update-mode off|automatic|device_managed`,
   `--managed-updates-allowed` and `--connecting-code` (needs NervesHub v2.5.3 or
   later). The API can't set a device's deployment group: NervesHub assigns one
-  whose version and tag conditions the device matches when it connects
+  whose version and tag conditions the device matches when it connects.
+  `create --shared-secret` also creates the device's own shared secret in the
+  same transaction and prints it; the secret is shown only once
 - `delete <identifier>`
 - `upgrade <identifier> <firmware-uuid>` — upgrade a device to a firmware
 - `move <identifier>` — move a device to another product
