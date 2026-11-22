@@ -58,6 +58,15 @@ const (
 	testDeploymentPath  = testDeploymentsPath + "/production"
 )
 
+// release returns the flat body of a POST to the group's releases endpoint.
+func (r deploymentRequest) release(t *testing.T) map[string]any {
+	t.Helper()
+	if r.Method != http.MethodPost || r.Path != testDeploymentPath+"/releases" {
+		t.Fatalf("want POST %s/releases, got %s %s", testDeploymentPath, r.Method, r.Path)
+	}
+	return r.Body
+}
+
 func deploymentStr(s string) *string { return &s }
 func deploymentBool(b bool) *bool    { return &b }
 
@@ -279,12 +288,15 @@ func TestUpdateDeploymentReleaseOnly(t *testing.T) {
 	if d.FirmwareUUID != "fw-2" {
 		t.Errorf("deployment: %+v", d)
 	}
-	if len(*reqs) != 1 {
-		t.Fatalf("want 1 request, got %+v", *reqs)
+	if len(*reqs) != 2 {
+		t.Fatalf("want the release then a read of the group, got %+v", *reqs)
 	}
-	dep := (*reqs)[0].deployment(t)
-	if len(dep) != 3 || dep["firmware"] != "fw-2" || dep["archive"] != "ar-1" || dep["required"] != true {
-		t.Errorf("release body: %+v", dep)
+	rel := (*reqs)[0].release(t)
+	if len(rel) != 3 || rel["firmware"] != "fw-2" || rel["archive"] != "ar-1" || rel["required"] != true {
+		t.Errorf("release body: %+v", rel)
+	}
+	if r := (*reqs)[1]; r.Method != http.MethodGet || r.Path != testDeploymentPath {
+		t.Errorf("second request: %s %s", r.Method, r.Path)
 	}
 }
 
@@ -326,7 +338,7 @@ func TestUpdateDeploymentSplitsReleaseFromSettings(t *testing.T) {
 	if got, _ := cond["tags"].([]any); len(got) != 1 || got[0] != "prod" {
 		t.Errorf("settings conditions: %+v", cond)
 	}
-	if release := (*reqs)[1].deployment(t); len(release) != 1 || release["firmware"] != "fw-2" {
+	if release := (*reqs)[1].release(t); len(release) != 1 || release["firmware"] != "fw-2" {
 		t.Errorf("second request should be the release alone, got %+v", release)
 	}
 	if on := (*reqs)[2].deployment(t); len(on) != 1 || on["state"] != "on" {
@@ -346,13 +358,13 @@ func TestUpdateDeploymentConditionsBeforeRelease(t *testing.T) {
 		DeploymentInput{Firmware: "fw-2", Tags: &tags}); err != nil {
 		t.Fatalf("UpdateDeployment: %v", err)
 	}
-	if len(*reqs) != 2 {
-		t.Fatalf("want 2 requests, got %+v", *reqs)
+	if len(*reqs) != 3 {
+		t.Fatalf("want settings, release, read; got %+v", *reqs)
 	}
 	if _, ok := (*reqs)[0].deployment(t)["conditions"]; !ok {
 		t.Errorf("first request should change the conditions, got %+v", (*reqs)[0].Body)
 	}
-	if got := (*reqs)[1].deployment(t); got["firmware"] != "fw-2" {
+	if got := (*reqs)[1].release(t); got["firmware"] != "fw-2" {
 		t.Errorf("second request should be the release, got %+v", got)
 	}
 }
@@ -366,10 +378,11 @@ func TestUpdateDeploymentStateOnAfterRelease(t *testing.T) {
 		DeploymentInput{Firmware: "fw-2", State: "on"}); err != nil {
 		t.Fatalf("UpdateDeployment: %v", err)
 	}
+	// Turning the group on answers with the group, so it isn't read again.
 	if len(*reqs) != 2 {
 		t.Fatalf("want release then turn-on, got %+v", *reqs)
 	}
-	if got := (*reqs)[0].deployment(t); len(got) != 1 || got["firmware"] != "fw-2" {
+	if got := (*reqs)[0].release(t); len(got) != 1 || got["firmware"] != "fw-2" {
 		t.Errorf("first request should be the release, got %+v", got)
 	}
 	if got := (*reqs)[1].deployment(t); len(got) != 1 || got["state"] != "on" {
@@ -386,13 +399,13 @@ func TestUpdateDeploymentTurnsOffBeforeRelease(t *testing.T) {
 		DeploymentInput{Firmware: "fw-2", State: "off"}); err != nil {
 		t.Fatalf("UpdateDeployment: %v", err)
 	}
-	if len(*reqs) != 2 {
-		t.Fatalf("want 2 requests, got %+v", *reqs)
+	if len(*reqs) != 3 {
+		t.Fatalf("want turn-off, release, read; got %+v", *reqs)
 	}
 	if got := (*reqs)[0].deployment(t); got["state"] != "off" {
 		t.Errorf("first request should turn the group off, got %+v", got)
 	}
-	if got := (*reqs)[1].deployment(t); got["firmware"] != "fw-2" {
+	if got := (*reqs)[1].release(t); got["firmware"] != "fw-2" {
 		t.Errorf("second request should be the release, got %+v", got)
 	}
 }
@@ -409,15 +422,15 @@ func TestUpdateDeploymentArchiveKeepsCurrentFirmware(t *testing.T) {
 		DeploymentInput{Archive: "ar-1"}); err != nil {
 		t.Fatalf("UpdateDeployment: %v", err)
 	}
-	if len(*reqs) != 2 {
-		t.Fatalf("want GET then PUT, got %+v", *reqs)
+	if len(*reqs) != 3 {
+		t.Fatalf("want GET, release, GET; got %+v", *reqs)
 	}
 	if r := (*reqs)[0]; r.Method != http.MethodGet || r.Path != testDeploymentPath {
 		t.Errorf("first request: %s %s", r.Method, r.Path)
 	}
-	dep := (*reqs)[1].deployment(t)
-	if dep["firmware"] != "fw-current" || dep["archive"] != "ar-1" {
-		t.Errorf("release body: %+v", dep)
+	rel := (*reqs)[1].release(t)
+	if rel["firmware"] != "fw-current" || rel["archive"] != "ar-1" {
+		t.Errorf("release body: %+v", rel)
 	}
 }
 

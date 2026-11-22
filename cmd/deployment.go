@@ -261,7 +261,13 @@ change the group's own settings. --tag replaces the tag list, and --tag "" or
 The server applies a new release and setting changes in separate requests, so
 nh sends them one after another: the settings (including --state off) first,
 then the new release, and --state on last. That way a release never reaches
-devices outside the new conditions, or a group that's being turned off.`,
+devices outside the new conditions, or a group that's being turned off.
+
+On a server with the deployment release API the new release is created there,
+as "nh deployment release create" does; an older server gets the release
+request it has always taken. To create a release with a description, notes
+or connecting code, or to change one once it's made, use
+"nh deployment release".`,
 	Args: exactlyOneArg(
 		"deployment name missing",
 		"too many arguments: provide a single deployment name",

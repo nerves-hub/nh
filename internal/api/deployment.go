@@ -287,6 +287,11 @@ func (c *Client) CreateDeployment(ctx context.Context, org, product, name string
 // Only the requests needed are sent. An archive with no firmware keeps the
 // current release's firmware, which is read first. If a later request fails,
 // the error says which changes have already taken effect.
+//
+// The release is created with POST .../releases where the server has it
+// (see CreateDeploymentRelease), and otherwise with the release PUT that
+// older servers take. A release made with the POST is followed by a read of
+// the group, unless turning the group on returns it anyway.
 func (c *Client) UpdateDeployment(ctx context.Context, org, product, name string, in DeploymentInput) (*Deployment, error) {
 	if org == "" {
 		return nil, errors.New("api: org is required")
@@ -312,6 +317,9 @@ func (c *Client) UpdateDeployment(ctx context.Context, org, product, name string
 	}
 
 	rb := releaseBody{Firmware: in.Firmware, Archive: in.Archive, Required: in.Required}
+	// groupKnown is whether a request has already found the group, which
+	// sendRelease needs to read a 404 from POST .../releases.
+	groupKnown := false
 	if rb.Firmware == "" {
 		// A release always has a firmware (DeploymentRelease.new_changeset
 		// requires it), so an archive on its own keeps the current one.
@@ -323,6 +331,7 @@ func (c *Client) UpdateDeployment(ctx context.Context, org, product, name string
 			return nil, fmt.Errorf("deployment group %q has no current firmware to pair with the archive; pass a firmware too", name)
 		}
 		rb.Firmware = current.FirmwareUUID
+		groupKnown = true
 	}
 
 	turnOn := in.State == "on"
@@ -337,9 +346,10 @@ func (c *Client) UpdateDeployment(ctx context.Context, org, product, name string
 			return nil, err
 		}
 		done = append(done, "its settings were updated")
+		groupKnown = true
 	}
 
-	d, err := c.putDeployment(ctx, org, product, name, rb)
+	d, err := c.sendRelease(ctx, org, product, name, rb, groupKnown)
 	if err != nil {
 		return nil, partialUpdateError(name, done, "creating the new release", err)
 	}
@@ -348,6 +358,11 @@ func (c *Client) UpdateDeployment(ctx context.Context, org, product, name string
 	if turnOn {
 		if d, err = c.putDeployment(ctx, org, product, name, groupBody{State: "on"}); err != nil {
 			return nil, partialUpdateError(name, done, "turning it on", err)
+		}
+	}
+	if d == nil {
+		if d, err = c.GetDeployment(ctx, org, product, name); err != nil {
+			return nil, partialUpdateError(name, done, "reading the group back", err)
 		}
 	}
 	return d, nil

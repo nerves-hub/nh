@@ -336,11 +336,12 @@ func TestDeploymentUpdate(t *testing.T) {
 }
 
 // --firmware used to make the server drop every other flag; now the release
-// and the settings go in separate requests.
+// and the settings go in separate requests, and the release goes to
+// POST .../releases on a server that has it.
 func TestDeploymentUpdateFirmwareAndSettings(t *testing.T) {
 	srv, reqs := deploymentFake(t,
 		`{"data":{"name":"production","state":"off"}}`,
-		`{"data":{"name":"production","state":"off","firmware_uuid":"fw-2"}}`,
+		`{"data":{"number":4,"firmware":{"uuid":"fw-2"},"required":true,"is_current":true}}`,
 		`{"data":{"name":"production","state":"on","firmware_uuid":"fw-2"}}`,
 	)
 
@@ -357,9 +358,14 @@ func TestDeploymentUpdateFirmwareAndSettings(t *testing.T) {
 	if len(*reqs) != 3 {
 		t.Fatalf("want settings, release, turn-on; got %+v", *reqs)
 	}
-	for _, r := range *reqs {
-		if r.method != http.MethodPut || r.path != "/api/orgs/acme/products/thermostat/deployments/production" {
-			t.Errorf("request: %s %s", r.method, r.path)
+	const group = "/api/orgs/acme/products/thermostat/deployments/production"
+	for i, want := range []struct{ method, path string }{
+		{http.MethodPut, group},
+		{http.MethodPost, group + "/releases"},
+		{http.MethodPut, group},
+	} {
+		if r := (*reqs)[i]; r.method != want.method || r.path != want.path {
+			t.Errorf("request %d: %s %s, want %s %s", i, r.method, r.path, want.method, want.path)
 		}
 	}
 	settings, _ := (*reqs)[0].body["deployment"].(map[string]any)
@@ -375,8 +381,8 @@ func TestDeploymentUpdateFirmwareAndSettings(t *testing.T) {
 	if tags, ok := cond["tags"].([]any); !ok || len(tags) != 0 || cond["version"] != "" {
 		t.Errorf("--tag \"\" and --version \"\" should clear the conditions, got %+v", cond)
 	}
-	release, _ := (*reqs)[1].body["deployment"].(map[string]any)
-	if len(release) != 2 || release["firmware"] != "fw-2" || release["required"] != true {
+	// The release endpoint takes a flat body.
+	if release := (*reqs)[1].body; len(release) != 2 || release["firmware"] != "fw-2" || release["required"] != true {
 		t.Errorf("release body: %+v", release)
 	}
 	if on, _ := (*reqs)[2].body["deployment"].(map[string]any); len(on) != 1 || on["state"] != "on" {
@@ -391,22 +397,29 @@ func TestDeploymentUpdateFirmwareAndSettings(t *testing.T) {
 func TestDeploymentUpdateArchive(t *testing.T) {
 	srv, reqs := deploymentFake(t,
 		`{"data":{"name":"production","firmware_uuid":"fw-current"}}`,
+		`{"data":{"number":2,"firmware":{"uuid":"fw-current"},"archive_uuid":"ar-1"}}`,
 		`{"data":{"name":"production","firmware_uuid":"fw-current","archive_uuid":"ar-1"}}`,
 	)
 
-	if _, err := execCmd(t, "",
+	out, err := execCmd(t, "",
 		"deployment", "update", "production", "--archive", "ar-1",
 		"--org", "acme", "--product", "thermostat",
-		"--uri", srv.URL, "--token", "tok",
-	); err != nil {
+		"--uri", srv.URL, "--token", "tok", "-o", "json",
+	)
+	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if len(*reqs) != 2 || (*reqs)[0].method != http.MethodGet {
-		t.Fatalf("want GET then PUT, got %+v", *reqs)
+	if len(*reqs) != 3 || (*reqs)[0].method != http.MethodGet || (*reqs)[1].method != http.MethodPost ||
+		(*reqs)[2].method != http.MethodGet {
+		t.Fatalf("want GET, POST release, GET; got %+v", *reqs)
 	}
-	dep, _ := (*reqs)[1].body["deployment"].(map[string]any)
-	if dep["firmware"] != "fw-current" || dep["archive"] != "ar-1" {
-		t.Errorf("release body: %+v", dep)
+	if rel := (*reqs)[1].body; rel["firmware"] != "fw-current" || rel["archive"] != "ar-1" {
+		t.Errorf("release body: %+v", rel)
+	}
+	// The group read back after the release is what's printed.
+	var got map[string]any
+	if err := json.Unmarshal([]byte(out), &got); err != nil || got["archive_uuid"] != "ar-1" {
+		t.Errorf("should print the group, got %q (%v)", out, err)
 	}
 }
 

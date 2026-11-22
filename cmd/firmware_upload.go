@@ -572,7 +572,8 @@ func confirmFirmwareUpload(cmd *cobra.Command, cfg *config.Config, path, product
 }
 
 // deployFirmware points each requested deployment group at uuid, returning the
-// groups updated.
+// groups updated. UpdateDeployment creates each release with
+// POST .../releases where the server has it, and the release PUT otherwise.
 func deployFirmware(cmd *cobra.Command, client *api.Client, org, product, uuid string) ([]string, error) {
 	names := deployTargets(cmd)
 	if len(names) == 0 {
