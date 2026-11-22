@@ -34,7 +34,8 @@ var orgMembersCmd = &cobra.Command{
 	Use:     "members [name]",
 	Aliases: []string{"users"},
 	Short:   "List members of an organization",
-	Long: `List the members of an organization you belong to.
+	Long: `List the members of an organization you belong to. A member holding one
+of the organization's custom roles shows that role's name, marked "(custom)".
 
 The name is optional; when omitted it defaults to the configured organization
 (--org, NERVES_HUB_ORG, or your saved settings).`,
@@ -77,7 +78,7 @@ func runOrgMembers(cmd *cobra.Command, args []string) error {
 	tw := newTableWriter(w)
 	fmt.Fprintln(tw, "NAME\tEMAIL\tROLE")
 	for _, m := range members {
-		fmt.Fprintf(tw, "%s\t%s\t%s\n", orDash(m.Name), m.Email, m.Role)
+		fmt.Fprintf(tw, "%s\t%s\t%s\n", orDash(m.Name), m.Email, memberRole(m))
 	}
 	return tw.Flush()
 }

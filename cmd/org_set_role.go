@@ -31,14 +31,26 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// orgRoles are the valid organization member roles.
+// orgRoles are the built-in organization member roles. They are the only
+// roles the API's invite and update endpoints accept: custom roles can be
+// assigned only in the web UI.
 var orgRoles = []string{"admin", "manage", "view"}
+
+// invalidRoleError explains which roles the CLI can assign.
+func invalidRoleError(role string) error {
+	return fmt.Errorf("invalid role %q: use %s (custom roles can only be assigned in the NervesHub web UI)", role, strings.Join(orgRoles, ", "))
+}
 
 // orgSetRoleCmd implements `nh org set-role <email> <role>`.
 var orgSetRoleCmd = &cobra.Command{
 	Use:   "set-role <email> <role>",
 	Short: "Change a member's role in an organization",
-	Long:  "Change a member's role (admin, manage, or view) in the organization (set with --org or NERVES_HUB_ORG).",
+	Long: `Change a member's role (admin, manage, or view) in the organization (set
+with --org or NERVES_HUB_ORG).
+
+The API only assigns built-in roles. Giving a member who holds a custom role a
+built-in one replaces their custom role; to assign a custom role, use the
+NervesHub web UI.`,
 	Args: func(_ *cobra.Command, args []string) error {
 		switch {
 		case len(args) < 2:
@@ -60,7 +72,7 @@ func runOrgSetRole(cmd *cobra.Command, args []string) error {
 	role := strings.ToLower(strings.TrimSpace(args[1]))
 
 	if !isValidRole(role) {
-		return fmt.Errorf("invalid role %q: use %s", args[1], strings.Join(orgRoles, ", "))
+		return invalidRoleError(args[1])
 	}
 
 	cfg := config.From(cmd.Context())

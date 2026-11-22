@@ -8,7 +8,7 @@ import (
 )
 
 const orgsWithProducts = `{"data":[
-	{"name":"acme","inserted_at":"2026-01-02 00:00:00Z","updated_at":"2026-02-02 00:00:00Z","products":[{"id":1,"name":"thermostat"},{"id":2,"name":"doorbell"}]},
+	{"name":"acme","inserted_at":"2026-01-02 00:00:00Z","updated_at":"2026-02-02 00:00:00Z","products":[{"name":"thermostat","require_unique_firmware_version":false,"allowed_update_tools":["fwup"]},{"name":"doorbell"}]},
 	{"name":"globex","inserted_at":"2026-03-04 00:00:00Z","updated_at":"2026-03-05 00:00:00Z"}
 ]}`
 
@@ -56,8 +56,12 @@ func TestOrgShowJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if !strings.Contains(out, `"name": "acme"`) {
+	if !strings.Contains(out, `"name": "acme"`) || !strings.Contains(out, `"name": "thermostat"`) {
 		t.Errorf("json output expected, got %q", out)
+	}
+	// The server sends no product id, so the CLI must not invent one.
+	if strings.Contains(out, `"id"`) {
+		t.Errorf("json output should not carry a product id, got %q", out)
 	}
 }
 

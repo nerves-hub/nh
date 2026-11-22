@@ -31,15 +31,30 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// orgInviteCmd implements `nh org invite <email> <role>`.
+// orgInviteCmd implements `nh org invite <email> <role>`, also available as
+// `nh org add-member`. The server's POST /orgs/{org}/users (add, deprecated)
+// just calls invite, so the CLI exposes the one endpoint under both names.
 var orgInviteCmd = &cobra.Command{
-	Use:   "invite <email> <role>",
-	Short: "Invite a user to an organization",
-	Long:  "Invite a user, by email, to the organization (set with --org or NERVES_HUB_ORG) with a role of admin, manage, or view.",
-	Args: func(_ *cobra.Command, args []string) error {
+	Use:     "invite <email> <role>",
+	Aliases: []string{"add-member"},
+	Short:   "Invite a user to an organization (also: add-member)",
+	Long: `Invite a user, by email, to the organization (set with --org or
+NERVES_HUB_ORG) with a role of admin, manage, or view.
+
+Whether or not they already have an account, the user joins only once they
+accept the emailed invitation. add-member is another name for this command:
+NervesHub always invites rather than adding a member directly.
+
+The API only offers built-in roles; to invite someone with one of the
+organization's custom roles, use the NervesHub web UI.`,
+	Args: func(cmd *cobra.Command, args []string) error {
 		switch {
 		case len(args) < 2:
-			return errors.New("usage: org invite <email> <role>")
+			name := cmd.CalledAs()
+			if name == "" {
+				name = cmd.Name()
+			}
+			return fmt.Errorf("usage: org %s <email> <role>", name)
 		case len(args) > 2:
 			return errors.New("too many arguments: provide an email and a role")
 		}
@@ -57,7 +72,7 @@ func runOrgInvite(cmd *cobra.Command, args []string) error {
 	role := strings.ToLower(strings.TrimSpace(args[1]))
 
 	if !isValidRole(role) {
-		return fmt.Errorf("invalid role %q: use %s", args[1], strings.Join(orgRoles, ", "))
+		return invalidRoleError(args[1])
 	}
 
 	cfg := config.From(cmd.Context())

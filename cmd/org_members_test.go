@@ -7,9 +7,12 @@ import (
 	"testing"
 )
 
+// membersResponse mirrors OrgUserJSON: role is null when the member holds a
+// custom role, whose name is in custom_role.
 const membersResponse = `{"data":[
-	{"name":"Alice","email":"alice@example.com","role":"admin"},
-	{"name":"Bob","email":"bob@example.com","role":"view"}
+	{"name":"Alice","email":"alice@example.com","role":"admin","custom_role":null},
+	{"name":"Bob","email":"bob@example.com","role":"view","custom_role":null},
+	{"name":"Carol","email":"carol@example.com","role":null,"custom_role":"deployer"}
 ]}`
 
 func TestOrgMembers(t *testing.T) {
@@ -36,6 +39,40 @@ func TestOrgMembers(t *testing.T) {
 			t.Errorf("table output missing %q, got:\n%s", want, out)
 		}
 	}
+	carol := orgOutputLine(out, "carol@example.com")
+	if !strings.HasSuffix(strings.TrimSpace(carol), "deployer (custom)") {
+		t.Errorf("custom role should fill the ROLE column, got line %q", carol)
+	}
+}
+
+func TestOrgMembersNoRole(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"name":"Dan","email":"dan@example.com","role":null,"custom_role":null}]}`))
+	}))
+	defer srv.Close()
+
+	out, err := execCmd(t, "",
+		"org", "members", "acme",
+		"--uri", srv.URL, "--token", "tok",
+	)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	dan := orgOutputLine(out, "dan@example.com")
+	if !strings.HasSuffix(strings.TrimSpace(dan), "-") {
+		t.Errorf("a member with no role should show '-', got line %q", dan)
+	}
+}
+
+// orgOutputLine returns the first line of out containing substr, or "".
+func orgOutputLine(out, substr string) string {
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, substr) {
+			return line
+		}
+	}
+	return ""
 }
 
 func TestOrgMembersAlias(t *testing.T) {
@@ -99,8 +136,16 @@ func TestOrgMembersJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if !strings.Contains(out, `"email": "alice@example.com"`) {
-		t.Errorf("json output expected, got %q", out)
+	for _, want := range []string{
+		`"email": "alice@example.com"`,
+		`"custom_role": "deployer"`,
+		// Nulls pass through rather than becoming empty strings.
+		`"role": null`,
+		`"custom_role": null`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("json output missing %s, got %q", want, out)
+		}
 	}
 }
 

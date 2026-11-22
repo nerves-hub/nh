@@ -19,7 +19,7 @@ func TestOrgSetRole(t *testing.T) {
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		gotRole = body.Role
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":{"name":"Alice","email":"alice@example.com","role":"manage"}}`))
+		_, _ = w.Write([]byte(`{"data":{"name":"Alice","email":"alice@example.com","role":"manage","custom_role":null}}`))
 	}))
 	defer srv.Close()
 
@@ -75,8 +75,8 @@ func TestOrgSetRoleInvalid(t *testing.T) {
 		"org", "set-role", "alice@example.com", "superuser",
 		"--org", "acme", "--token", "tok",
 	)
-	if err == nil || !strings.Contains(err.Error(), "invalid role") {
-		t.Errorf("expected invalid-role error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "invalid role") || !strings.Contains(err.Error(), "custom roles") {
+		t.Errorf("expected invalid-role error explaining custom roles, got %v", err)
 	}
 }
 
