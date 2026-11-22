@@ -86,6 +86,10 @@ If you are using a self-hosted NervesHub installation, you will need to tell `nh
 nh config set uri https://my.nerves-hub.installation
 ```
 
+Check that `nh` can reach it with `nh status`, which needs no sign-in. It prints
+the configured URI and whether the server answered its health check, and exits
+non-zero when the server is unreachable or reports a problem.
+
 Your token and defaults are saved to `~/.nh/settings.json`. See
 [Configuration](#configuration) below. Migrating from the old Elixir CLI? See
 [Migrating from the Elixir CLI](#migrating-from-the-elixir-cli).
@@ -243,9 +247,18 @@ variable — see [Configuration](#configuration)):
 - `delete <name>` — delete the key from the server; local key files are kept and listed
 
 **`nh ca`** — manage organization CA certificates
-- `generate` — generate a CA certificate locally
-- `upload [name]` — register a CA certificate with the organization
-- `list`, `show <serial>`, `delete <serial>`
+- `generate` — generate a CA certificate locally (`--upload` registers it, and
+  takes the `--jitp-*` flags below)
+- `upload [name]` — register a CA certificate with the organization.
+  `--jitp-product <name>` turns on just-in-time provisioning: a device whose
+  certificate the CA signed is created in that product on its first connection,
+  with `--jitp-tag` (repeatable or comma-separated) and `--jitp-description`.
+  Naming the product needs NervesHub v2.5.0 or later
+- `list`, `show <serial>`, `delete <serial>` — `list` and `show` include each
+  CA's JITP product, tags and description
+
+**`nh status`** — check that the configured server is up (`GET /status/alive`,
+no sign-in needed); `--timeout` sets how long to wait
 
 **`nh iroh-endpoint`** (alias `iroh`) — manage an organization's iroh endpoint ids
 - `list` — list registered endpoints; `--owner device|user|none`, `--search <text>`
@@ -310,6 +323,7 @@ self-hosted NervesHub (or a staging environment):
 
 ```sh
 nh config set uri https://nerves-hub.your-company.com
+nh status   # check that nh can reach it
 ```
 
 Like org and product, a saved `uri` is the lowest-precedence source: the `--uri`
