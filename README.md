@@ -127,7 +127,8 @@ variable — see [Configuration](#configuration)):
 **`nh device`** — manage devices
 - `list` — list devices in a product (`--filter key:value`, `--sort`, `--page`);
   `-q`/`--query` takes the web UI search bar's advanced query language,
-  including custom health metrics:
+  including custom health metrics (needs NervesHub v2.5.0 or later; see
+  `nh device list --help` for each column's operators):
 
   ```sh
   # Devices whose latest cpu_temp reading is over 70

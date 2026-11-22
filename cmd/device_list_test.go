@@ -3,6 +3,7 @@ package cmd
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -222,28 +223,105 @@ func TestDeviceListFilters(t *testing.T) {
 	}
 }
 
-func TestDeviceListAdvancedQuery(t *testing.T) {
-	var gotQuery string
+// queryServer answers like NervesHub v2.5.0+: the probe nh sends to check
+// advanced query support ("(") gets a 422 parse error, and any other request
+// gets the device list from devices. It records the last non-probe query.
+func queryServer(t *testing.T, devices string, got *url.Values) *httptest.Server {
+	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotQuery = r.URL.Query().Get("filters[advanced_query]")
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":[]}`))
+		if r.URL.Query().Get("filters[advanced_query]") == "(" {
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = w.Write([]byte(`{"errors":{"detail":"invalid advanced query: unexpected end of input (at character 1)"}}`))
+			return
+		}
+		*got = r.URL.Query()
+		_, _ = w.Write([]byte(devices))
 	}))
-	defer srv.Close()
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestDeviceListAdvancedQuery(t *testing.T) {
+	var got url.Values
+	srv := queryServer(t, `{"data":[]}`, &got)
 
 	query := `metric:cpu_temp > 70 and connection = "connected"`
-	_, err := execCmd(t, "",
+	out, err := execCmd(t, "",
 		"device", "list",
 		"--org", "acme", "--product", "thermostat",
-		"--query", query,
+		"--query", "  "+query+"\n",
 		"--uri", srv.URL, "--token", "tok",
 	)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	// The expression is sent verbatim as the advanced_query filter.
-	if gotQuery != query {
-		t.Errorf("query param: want %q, got %q", query, gotQuery)
+	// The expression is sent, trimmed, as the advanced_query filter.
+	if q := got.Get("filters[advanced_query]"); q != query {
+		t.Errorf("query param: want %q, got %q", query, q)
+	}
+	if !strings.Contains(out, "No devices in acme/thermostat match the given --query/--filter.") {
+		t.Errorf("an empty result should say nothing matched, got %q", out)
+	}
+}
+
+func TestDeviceListQueryCombinesWithFilters(t *testing.T) {
+	var got url.Values
+	srv := queryServer(t, `{"data":[]}`, &got)
+
+	_, err := execCmd(t, "",
+		"device", "list",
+		"--org", "acme", "--product", "thermostat",
+		"--query", "metric:cpu_temp > 70", "--filter", "tag:prod",
+		"--uri", srv.URL, "--token", "tok",
+	)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if got.Get("filters[advanced_query]") != "metric:cpu_temp > 70" || got.Get("filters[tag]") != "prod" {
+		t.Errorf("both the query and the filter should be sent, got %v", got)
+	}
+}
+
+func TestDeviceListBlankQuery(t *testing.T) {
+	_, err := execCmd(t, "",
+		"device", "list",
+		"--org", "acme", "--product", "thermostat",
+		"--query", " \n",
+		"--uri", "https://example.com", "--token", "tok",
+	)
+	if err == nil || !strings.Contains(err.Error(), "--query is empty") {
+		t.Errorf("want a --query is empty error, got %v", err)
+	}
+}
+
+// Servers before v2.5.0 drop the unknown filter (and list every device) or
+// fail on it; nh refuses instead of printing an unfiltered list.
+func TestDeviceListQueryRefusedOnOldServers(t *testing.T) {
+	for name, status := range map[string]int{"ignores the filter": http.StatusOK, "fails on it": http.StatusInternalServerError} {
+		t.Run(name, func(t *testing.T) {
+			listed := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				listed++
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(status)
+				_, _ = w.Write([]byte(`{"data":[{"identifier":"dev-001","connection_status":"online"}]}`))
+			}))
+			defer srv.Close()
+
+			out, err := execCmd(t, "",
+				"device", "list",
+				"--org", "acme", "--product", "thermostat",
+				"--query", `health_status = "unhealthy"`,
+				"--uri", srv.URL, "--token", "tok",
+			)
+			if err == nil || !strings.Contains(err.Error(), "needs v2.5.0 or later") {
+				t.Errorf("want an unsupported server error, got %v", err)
+			}
+			if strings.Contains(out, "dev-001") || listed != 1 {
+				t.Errorf("only the probe should be sent and nothing listed; requests %d, output %q", listed, out)
+			}
+		})
 	}
 }
 

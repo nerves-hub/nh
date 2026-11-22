@@ -53,15 +53,26 @@ through to the API as-is, so any server-supported filter works.
 
 Use --query for the advanced query language from the web UI's search bar.
 Values are quoted; comparisons combine with and/or/not and parentheses.
-Custom health metrics are queried as metric:<key> against each device's
-latest reported reading, with the numeric operators >, >=, < and <=.
-Queryable columns: identifier, search, platform, firmware, architecture,
-connection, connection_type, last_seen, tags, health_status, updates,
-alarm, alarm_status, update_status, deployment_group, deleted, and
-metric:<key>. Input that doesn't look like a query expression is treated
-as a free-text search across the device's textual fields; a query
-expression with a typo is rejected by the server with the parse error.
---query combines with any --filter flags (results must match both).`,
+Each column takes its own operators:
+
+  like, not like          identifier, search (SQL LIKE patterns, e.g. "%kit%")
+  =, !=                   platform, firmware, architecture, connection,
+                          connection_type, health_status, updates,
+                          alarm_status, deleted, deployment_group,
+                          firmware_validation_status, signer_ca
+  contains, not_contains  tags, alarm
+  is, is not              update_status
+  >, <                    last_seen (e.g. "7 days ago")
+  >, >=, <, <=            metric:<key>, the device's latest reading of a
+                          custom health metric
+
+Input that doesn't look like a query expression is treated as a free-text
+search across the device's textual fields; a query expression with a typo
+is rejected by the server with the parse error. --query combines with any
+--filter flags (results must match both).
+
+--query needs NervesHub v2.5.0 or later. Older servers ignore it and would
+list every device, so nh checks first (one extra request) and refuses.`,
 	Example: `  # Devices whose latest cpu_temp reading is over 70
   nh device list --query 'metric:cpu_temp > 70'
 
@@ -164,6 +175,10 @@ func runDeviceList(cmd *cobra.Command, _ []string) error {
 	}
 
 	advancedQuery, _ := cmd.Flags().GetString("query")
+	advancedQuery = strings.TrimSpace(advancedQuery)
+	if cmd.Flags().Changed("query") && advancedQuery == "" {
+		return errors.New("--query is empty: give a query expression, or leave out --query to list every device")
+	}
 	if advancedQuery != "" && filters["advanced_query"] != "" {
 		return errors.New("--query and --filter advanced_query:... are the same filter; use one")
 	}
@@ -171,6 +186,18 @@ func runDeviceList(cmd *cobra.Command, _ []string) error {
 	client, err := newAuthedClient(cfg)
 	if err != nil {
 		return err
+	}
+
+	// A server that doesn't know the advanced query would answer with every
+	// device, as if they all matched.
+	if advancedQuery != "" || filters["advanced_query"] != "" {
+		supported, err := client.SupportsAdvancedQuery(cmd.Context(), org, product)
+		if err != nil {
+			return err
+		}
+		if !supported {
+			return errors.New("this NervesHub server doesn't support advanced queries (it needs v2.5.0 or later), so it would ignore the query and list every device")
+		}
 	}
 
 	result, err := client.ListDevices(cmd.Context(), org, product, api.ListDevicesOptions{
@@ -195,7 +222,11 @@ func runDeviceList(cmd *cobra.Command, _ []string) error {
 	}
 
 	if len(result.Devices) == 0 {
-		fmt.Fprintf(w, "No devices found in %s/%s.\n", org, product)
+		if advancedQuery != "" || len(filters) > 0 {
+			fmt.Fprintf(w, "No devices in %s/%s match the given --query/--filter.\n", org, product)
+		} else {
+			fmt.Fprintf(w, "No devices found in %s/%s.\n", org, product)
+		}
 		return nil
 	}
 

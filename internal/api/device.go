@@ -25,6 +25,7 @@ package api
 import (
 	"context"
 	"errors"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -141,6 +142,32 @@ func (c *Client) ListDevices(ctx context.Context, org, product string, opts List
 		return nil, err
 	}
 	return &result, nil
+}
+
+// advancedQueryProbe is a query expression no NervesHub can parse: an opening
+// parenthesis is always read as an attempted expression, never as free text.
+const advancedQueryProbe = "("
+
+// SupportsAdvancedQuery reports whether the server applies
+// filters[advanced_query] to the device list. NervesHub v2.5.0 and later
+// answer an unparseable query with 422. Older servers either drop the
+// unknown filter, answering with every device, or fail on it with a 5xx.
+// It costs one request for a single device.
+func (c *Client) SupportsAdvancedQuery(ctx context.Context, org, product string) (bool, error) {
+	_, err := c.ListDevices(ctx, org, product, ListDevicesOptions{PageSize: 1, Query: advancedQueryProbe})
+	if err == nil {
+		return false, nil
+	}
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		switch {
+		case apiErr.StatusCode == http.StatusUnprocessableEntity:
+			return true, nil
+		case apiErr.StatusCode >= 500:
+			return false, nil
+		}
+	}
+	return false, err
 }
 
 // GetDevice returns a single device by identifier via
