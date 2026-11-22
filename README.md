@@ -188,6 +188,12 @@ variable — see [Configuration](#configuration)):
   later). The API can't set a device's deployment group: NervesHub assigns one
   whose version and tag conditions the device matches when it connects
 - `delete <identifier>`
+- `import <manifest.json>` — create devices, with their certificates, from a
+  Microchip Trust&Go manifest (`-` reads standard input; `--tag`, repeatable).
+  nh checks every entry first and sends nothing if any has a problem;
+  `--dry-run` only checks, offline. NervesHub creates the devices in the
+  background and reports how many it created on the product's notifications
+  page
 - `upgrade <identifier> <firmware-uuid>` — upgrade a device to a firmware
 - `move <identifier>` — move a device to another product
 - `reboot <identifier>`, `reconnect <identifier>`
@@ -215,6 +221,8 @@ variable — see [Configuration](#configuration)):
   - `list <identifier>`, `show <identifier> <serial>`, `delete <identifier> <serial>`
   - `generate <identifier>` — generate a device key and CSR or signed certificate locally
   - `upload <identifier> <certificate path>` — upload a certificate for a device
+  - `lookup <certificate path>` — find the device, anywhere in the org, that a
+    PEM or DER certificate is registered to (only the certificate is sent)
 - `shared-secrets` — manage a device's own shared secrets (`nhd_` keys)
   - `list <identifier>` — list the device's keys, deactivated ones included
     (secrets are never listed)
