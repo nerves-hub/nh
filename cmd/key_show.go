@@ -24,8 +24,10 @@ package cmd
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/nerves-hub/nh/internal/config"
+	"github.com/nerves-hub/nh/internal/pki"
 	"github.com/spf13/cobra"
 )
 
@@ -33,9 +35,11 @@ import (
 var keyShowCmd = &cobra.Command{
 	Use:   "show <name>",
 	Short: "Show details for a signing key",
-	Long:  "Show details for a single signing key by its name.",
-	Args:  keyNameArgs,
-	RunE:  runKeyShow,
+	Long: `Show details for a single signing key by its name: its scheme, the key
+itself, and for a secure_boot_v2_rsa key its Secure Boot v2 eFuse digest or for
+an x509_certificate its SHA-256 fingerprint.`,
+	Args: keyNameArgs,
+	RunE: runKeyShow,
 }
 
 func init() {
@@ -72,7 +76,31 @@ func runKeyShow(cmd *cobra.Command, args []string) error {
 			fmt.Fprintf(tw, "%s\t%s\n", label, value)
 		}
 	}
+	scheme := pki.SchemeOrDefault(key.Scheme)
 	row("Name:", key.Name)
-	row("Public key:", key.Key)
-	return tw.Flush()
+	row("Scheme:", string(scheme))
+	if digest, ok := pki.KeyDigest(scheme, key.Key); ok {
+		row(pki.KeyPreviewLabel(scheme)+":", digest)
+	}
+	multiline := strings.Contains(strings.TrimSpace(key.Key), "\n")
+	if !multiline {
+		row(keyValueLabel(scheme), key.Key)
+	}
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	// A PEM key or certificate spans several lines, which would break the
+	// table's alignment, so it is printed whole after it.
+	if multiline {
+		fmt.Fprintf(w, "%s\n%s\n", keyValueLabel(scheme), strings.TrimRight(key.Key, "\n"))
+	}
+	return nil
+}
+
+// keyValueLabel names what a key string holds for scheme.
+func keyValueLabel(scheme pki.Scheme) string {
+	if scheme == pki.SchemeX509Certificate {
+		return "Certificate:"
+	}
+	return "Public key:"
 }

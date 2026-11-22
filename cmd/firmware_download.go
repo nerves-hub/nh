@@ -30,6 +30,7 @@ import (
 
 	"github.com/nerves-hub/nh/internal/api"
 	"github.com/nerves-hub/nh/internal/config"
+	"github.com/nerves-hub/nh/internal/firmware"
 	"github.com/schollz/progressbar/v3"
 	"github.com/spf13/cobra"
 )
@@ -40,8 +41,10 @@ var firmwareDownloadCmd = &cobra.Command{
 	Short: "Download a firmware file",
 	Long: `Download a firmware image by its UUID.
 
-By default the image is saved as <uuid>.fw in the current directory. Use --file
-to choose a different path, or --file - to stream it to stdout.`,
+By default the image is saved in the current directory as <uuid> with the
+extension for its format, detected from the downloaded bytes: .fw (fwup), .bin
+(ESP-IDF), .avm (AtomVM) or .raucb (RAUC). Use --file to choose a different
+path, or --file - to stream it to stdout.`,
 	Args: exactlyOneArg(
 		"Firmware UUID missing",
 		"too many arguments: provide a single firmware UUID",
@@ -50,7 +53,7 @@ to choose a different path, or --file - to stream it to stdout.`,
 }
 
 func init() {
-	firmwareDownloadCmd.Flags().StringP("file", "f", "", "destination path (default <uuid>.fw; use - for stdout)")
+	firmwareDownloadCmd.Flags().StringP("file", "f", "", "destination path (default <uuid> plus the format's extension; use - for stdout)")
 	firmwareCmd.AddCommand(firmwareDownloadCmd)
 }
 
@@ -75,8 +78,9 @@ func runFirmwareDownload(cmd *cobra.Command, args []string) error {
 	}
 
 	dest, _ := cmd.Flags().GetString("file")
-	if dest == "" {
-		dest = uuid + ".fw"
+	defaultName := dest == ""
+	if defaultName {
+		dest = uuid + firmware.Fwup.Extension()
 	}
 
 	// Show a progress bar on stderr when it's an interactive terminal — safe
@@ -124,6 +128,13 @@ func runFirmwareDownload(cmd *cobra.Command, args []string) error {
 	if err := tmp.Close(); err != nil {
 		os.Remove(tmpName)
 		return err
+	}
+	// Name the file for what it is rather than assuming fwup. An unrecognised
+	// image keeps the .fw default.
+	if defaultName {
+		if format, err := firmware.Detect(tmpName); err == nil {
+			dest = uuid + format.Extension()
+		}
 	}
 	if err := os.Rename(tmpName, dest); err != nil {
 		os.Remove(tmpName)

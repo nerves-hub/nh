@@ -25,11 +25,13 @@ meta-uuid="arch-uuid"
 // stubArchiveFwup installs a fake fwup. `fwup -m` prints meta (or, when meta
 // is empty, fails with a message on stderr); `fwup --sign` copies -i to -o
 // and appends "SIGNED". Every invocation's arguments are appended to the
-// returned file, one per line, each call ending with "--".
+// returned file, one per line, each call ending with "--". The contents of the
+// key file passed with -s are copied to "key" beside it.
 func stubArchiveFwup(t *testing.T, meta string) string {
 	t.Helper()
 	dir := t.TempDir()
 	argsFile := filepath.Join(dir, "args")
+	keyFile := filepath.Join(dir, "key")
 	metaFile := filepath.Join(dir, "meta")
 	if err := os.WriteFile(metaFile, []byte(meta), 0o644); err != nil {
 		t.Fatal(err)
@@ -48,9 +50,12 @@ func stubArchiveFwup(t *testing.T, meta string) string {
 		"  case \"$1\" in\n" +
 		"    -i) in=\"$2\"; shift 2 ;;\n" +
 		"    -o) out=\"$2\"; shift 2 ;;\n" +
+		"    -s) key=\"$2\"; shift 2 ;;\n" +
 		"    *) shift ;;\n" +
 		"  esac\n" +
 		"done\n" +
+		// Record the key fwup was given; its file is removed after signing.
+		`[ -n "$key" ] && cat "$key" > "` + keyFile + `"` + "\n" +
 		`cat "$in" > "$out"` + "\n" +
 		`printf 'SIGNED' >> "$out"` + "\n"
 
@@ -164,9 +169,11 @@ func TestArchiveUploadSignedWithKey(t *testing.T) {
 		t.Errorf("metadata call: %v", calls[0])
 	}
 	sign := calls[1]
-	if len(sign) != 7 || sign[0] != "--sign" || sign[2] != path || sign[5] != "--private-key" ||
-		sign[6] != pki.PrivateKeyString(priv) {
+	if len(sign) != 7 || sign[0] != "--sign" || sign[2] != path || sign[5] != "-s" {
 		t.Errorf("sign call: %v", sign)
+	}
+	if signedWithKey(t, argsFile) != pki.PrivateKeyString(priv) {
+		t.Error("fwup received the wrong private key")
 	}
 
 	if got.method != http.MethodPost || got.path != "/api/orgs/acme/products/thermostat/archives" {
@@ -211,7 +218,7 @@ func TestArchiveUploadSignsFromEnvJSON(t *testing.T) {
 	}
 
 	calls := fwupCalls(t, argsFile)
-	if len(calls) != 2 || !strings.Contains(strings.Join(calls[1], " "), pki.PrivateKeyString(priv)) {
+	if len(calls) != 2 || signedWithKey(t, argsFile) != pki.PrivateKeyString(priv) {
 		t.Errorf("fwup should sign with the env key: %v", calls)
 	}
 	if got.content != "ARCHIVSIGNED" {
@@ -368,7 +375,7 @@ func TestArchiveUploadKeyAndSkipConflict(t *testing.T) {
 		"--org", "acme", "--product", "thermostat",
 		"--uri", "https://example.com", "--token", "tok",
 	)
-	if err == nil || !strings.Contains(err.Error(), "only one of --key or --skip-signing") {
+	if err == nil || !strings.Contains(err.Error(), "or --skip-signing") {
 		t.Errorf("expected conflict error, got %v", err)
 	}
 }
@@ -405,5 +412,62 @@ func TestArchiveUploadServerRejects(t *testing.T) {
 	)
 	if err == nil || !strings.Contains(err.Error(), "signature does not match") {
 		t.Errorf("expected the server's message, got %v", err)
+	}
+}
+
+// signedWithKey reports the key the fwup stub was given with -s.
+func signedWithKey(t *testing.T, argsFile string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(filepath.Dir(argsFile), "key"))
+	if err != nil {
+		t.Fatalf("fwup was not given a key file: %v", err)
+	}
+	return strings.TrimSpace(string(b))
+}
+
+func TestArchiveUploadSignedWithKeyFile(t *testing.T) {
+	argsFile := stubArchiveFwup(t, goodArchiveMeta)
+	srv, got := archiveUploadServer(t)
+
+	_, priv, err := pki.GenerateSigningKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "fwup-key.priv")
+	if err := os.WriteFile(keyPath, []byte(pki.PrivateKeyString(priv)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := writeArchiveFile(t)
+
+	out, err := execCmd(t, "",
+		"archive", "upload", path, "--key-file", keyPath,
+		"--org", "acme", "--product", "thermostat",
+		"--uri", srv.URL, "--token", "tok",
+	)
+	if err != nil {
+		t.Fatalf("Execute: %v\n%s", err, out)
+	}
+	if signedWithKey(t, argsFile) != pki.PrivateKeyString(priv) {
+		t.Error("fwup should sign with the --key-file key")
+	}
+	if got.content != "ARCHIVSIGNED" || !strings.Contains(out, "with key file fwup-key.priv") {
+		t.Errorf("upload %+v, output %q", got, out)
+	}
+}
+
+func TestArchiveUploadKeyFileConflicts(t *testing.T) {
+	path := writeArchiveFile(t)
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"--key", "ci", "--key-file", "k.priv"}, "only one of --key or --key-file"},
+		{[]string{"--key-file", "k.priv", "--skip-signing"}, "or --skip-signing"},
+	} {
+		args := append([]string{"archive", "upload", path}, tc.args...)
+		args = append(args, "--org", "acme", "--product", "thermostat", "--uri", "https://example.com", "--token", "tok")
+		if _, err := execCmd(t, "", args...); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%v: expected %q, got %v", tc.args, tc.want, err)
+		}
 	}
 }

@@ -33,6 +33,44 @@ func TestOrgMember(t *testing.T) {
 	}
 }
 
+func TestOrgMemberCustomRole(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"name":"Carol","email":"carol@example.com","role":null,"custom_role":"deployer"}}`))
+	}))
+	defer srv.Close()
+
+	out, err := execCmd(t, "",
+		"org", "member", "carol@example.com",
+		"--org", "acme", "--uri", srv.URL, "--token", "tok",
+	)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if role := orgOutputLine(out, "Role:"); !strings.HasSuffix(strings.TrimSpace(role), "deployer (custom)") {
+		t.Errorf("custom role line: got %q", role)
+	}
+}
+
+func TestOrgMemberNoRole(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"name":"Dan","email":"dan@example.com","role":null,"custom_role":null}}`))
+	}))
+	defer srv.Close()
+
+	out, err := execCmd(t, "",
+		"org", "member", "dan@example.com",
+		"--org", "acme", "--uri", srv.URL, "--token", "tok",
+	)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if role := orgOutputLine(out, "Role:"); !strings.HasSuffix(strings.TrimSpace(role), "-") {
+		t.Errorf("a member with no role should show '-', got %q", role)
+	}
+}
+
 func TestOrgMemberJSON(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

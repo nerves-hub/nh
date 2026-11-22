@@ -104,9 +104,15 @@ func TestCAGenerateDefaultsNameToOrg(t *testing.T) {
 // caUploadCapture records what an upload sent.
 type caUploadCapture struct {
 	tokenFetched bool
+	method       string
+	path         string
 	cert         string
 	description  string
 	verification string
+	// jitp is the raw "jitp" value sent, or nil when the body had none.
+	jitp json.RawMessage
+	// dropJITP makes the server answer without the JITP profile it was sent.
+	dropJITP bool
 }
 
 // caUploadServer issues token and accepts a CA registration, capturing the
@@ -122,13 +128,22 @@ func caUploadServer(t *testing.T, token string) (*httptest.Server, *caUploadCapt
 			_, _ = w.Write([]byte(`{"data":{"verification_token":"` + token + `"}}`))
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/ca_certificates"):
 			var body struct {
-				Cert             string `json:"cert"`
-				Description      string `json:"description"`
-				VerificationCert string `json:"verification_cert"`
+				Cert             string          `json:"cert"`
+				Description      string          `json:"description"`
+				VerificationCert string          `json:"verification_cert"`
+				JITP             json.RawMessage `json:"jitp"`
 			}
 			_ = json.NewDecoder(r.Body).Decode(&body)
+			cap.method, cap.path = r.Method, r.URL.Path
 			cap.cert, cap.description, cap.verification = body.Cert, body.Description, body.VerificationCert
-			_, _ = w.Write([]byte(`{"data":{"serial":"99887766","description":"` + body.Description + `"}}`))
+			cap.jitp = body.JITP
+			// Like CACertificateJSON, answer with the stored JITP profile, or
+			// null for none.
+			jitp := "null"
+			if len(body.JITP) > 0 && !cap.dropJITP {
+				jitp = string(body.JITP)
+			}
+			_, _ = w.Write([]byte(`{"data":{"serial":"99887766","description":"` + body.Description + `","jitp":` + jitp + `}}`))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -191,6 +206,151 @@ func TestCAUploadByName(t *testing.T) {
 	assertVerificationCert(t, cap.verification, caCert, token)
 	if !strings.Contains(out, "Registered CA certificate 05:F4:2A:96 with acme") {
 		t.Errorf("output: %q", out)
+	}
+	// Without the --jitp-* flags no JITP profile is sent.
+	if cap.jitp != nil {
+		t.Errorf("no jitp should be sent, got %s", cap.jitp)
+	}
+	if strings.Contains(out, "JITP") {
+		t.Errorf("output should not mention JITP, got %q", out)
+	}
+}
+
+func TestCAUploadWithJITP(t *testing.T) {
+	const token = "jitp-token"
+	srv, cap := caUploadServer(t, token)
+
+	dataDir := t.TempDir()
+	generateTestCA(t, dataDir, "acme", "myca")
+
+	out, err := execCmd(t, "",
+		"ca", "upload", "myca",
+		"--jitp-product", "sensor", "--jitp-tag", "prod, eu", "--jitp-tag", "fleet",
+		"--jitp-description", "Field unit",
+		"--org", "acme", "--data-dir", dataDir,
+		"--uri", srv.URL, "--token", "tok",
+	)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if cap.method != http.MethodPost || cap.path != "/api/orgs/acme/ca_certificates" {
+		t.Errorf("request: %s %s", cap.method, cap.path)
+	}
+	// CACertificateController.create takes the JITP profile's product by
+	// name; JITP.changeset casts tags and description.
+	var got map[string]any
+	if err := json.Unmarshal(cap.jitp, &got); err != nil {
+		t.Fatalf("jitp %s: %v", cap.jitp, err)
+	}
+	want := map[string]any{
+		"product_name": "sensor",
+		"tags":         []any{"prod", "eu", "fleet"},
+		"description":  "Field unit",
+	}
+	if gotJSON, _ := json.Marshal(got); string(gotJSON) != mustJSON(t, want) {
+		t.Errorf("jitp: got %s, want %s", gotJSON, mustJSON(t, want))
+	}
+	if !strings.Contains(out, "New devices it signs join sensor on first connect") {
+		t.Errorf("output should report the JITP product, got %q", out)
+	}
+}
+
+func TestCAUploadJITPProductOnly(t *testing.T) {
+	srv, cap := caUploadServer(t, "tok-only")
+
+	dataDir := t.TempDir()
+	generateTestCA(t, dataDir, "acme", "myca")
+
+	if _, err := execCmd(t, "",
+		"ca", "upload", "myca", "--jitp-product", "sensor",
+		"--org", "acme", "--data-dir", dataDir,
+		"--uri", srv.URL, "--token", "tok",
+	); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	// Tags and description are optional and left out when not given.
+	if string(cap.jitp) != `{"product_name":"sensor"}` {
+		t.Errorf("jitp: got %s", cap.jitp)
+	}
+}
+
+func TestCAUploadJITPNotSaved(t *testing.T) {
+	srv, cap := caUploadServer(t, "drop-token")
+	cap.dropJITP = true
+
+	dataDir := t.TempDir()
+	generateTestCA(t, dataDir, "acme", "myca")
+
+	_, err := execCmd(t, "",
+		"ca", "upload", "myca", "--jitp-product", "sensor",
+		"--org", "acme", "--data-dir", dataDir,
+		"--uri", srv.URL, "--token", "tok",
+	)
+	if err == nil || !strings.Contains(err.Error(), "didn't save its JITP profile") {
+		t.Errorf("expected an unsaved-JITP error, got %v", err)
+	}
+}
+
+func TestCAGenerateUploadJITPNotSaved(t *testing.T) {
+	srv, cap := caUploadServer(t, "gen-drop-token")
+	cap.dropJITP = true
+
+	_, err := execCmd(t, "",
+		"ca", "generate", "--name", "myca", "--upload", "--jitp-product", "sensor",
+		"--org", "acme", "--data-dir", t.TempDir(),
+		"--uri", srv.URL, "--token", "tok",
+	)
+	// The CA was registered, so the error mustn't say registering failed.
+	if err == nil || !strings.Contains(err.Error(), "didn't save its JITP profile") || strings.Contains(err.Error(), "registering it failed") {
+		t.Errorf("expected only an unsaved-JITP error, got %v", err)
+	}
+}
+
+func TestCAUploadJITPOldServerHint(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/verification_token") {
+			_, _ = w.Write([]byte(`{"data":{"verification_token":"old"}}`))
+			return
+		}
+		// NervesHub v2.4.0 ignores product_name, so JITP.changeset finds no
+		// product_id.
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_, _ = w.Write([]byte(`{"errors":{"jitp":{"product_id":["can't be blank"]}}}`))
+	}))
+	defer srv.Close()
+
+	dataDir := t.TempDir()
+	generateTestCA(t, dataDir, "acme", "myca")
+
+	_, err := execCmd(t, "",
+		"ca", "upload", "myca", "--jitp-product", "sensor",
+		"--org", "acme", "--data-dir", dataDir,
+		"--uri", srv.URL, "--token", "tok",
+	)
+	if err == nil || !strings.Contains(err.Error(), "needs NervesHub v2.5.0 or later") {
+		t.Errorf("expected an old-server hint, got %v", err)
+	}
+}
+
+func TestCAUploadJITPFlagValidation(t *testing.T) {
+	for name, tc := range map[string]struct {
+		args []string
+		want string
+	}{
+		"tag without product":         {[]string{"--jitp-tag", "prod"}, "--jitp-product is required"},
+		"description without product": {[]string{"--jitp-description", "x"}, "--jitp-product is required"},
+		"blank product":               {[]string{"--jitp-product", " "}, "--jitp-product is required"},
+		"tag with a space":            {[]string{"--jitp-product", "sensor", "--jitp-tag", "two words"}, "cannot contain spaces"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			args := append([]string{"ca", "upload", "myca"}, tc.args...)
+			args = append(args, "--org", "acme", "--data-dir", t.TempDir(), "--token", "tok", "--uri", "http://127.0.0.1:1")
+			_, err := execCmd(t, "", args...)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("expected %q error, got %v", tc.want, err)
+			}
+		})
 	}
 }
 
@@ -285,6 +445,7 @@ func TestCAGenerateUpload(t *testing.T) {
 	dataDir := t.TempDir()
 	out, err := execCmd(t, "",
 		"ca", "generate", "--name", "myca", "--upload", "--description", "Prod CA",
+		"--jitp-product", "sensor", "--jitp-tag", "prod",
 		"--org", "acme", "--data-dir", dataDir,
 		"--uri", srv.URL, "--token", "tok",
 	)
@@ -300,6 +461,19 @@ func TestCAGenerateUpload(t *testing.T) {
 	assertVerificationCert(t, cap.verification, caCert, token)
 	if !strings.Contains(out, "Generated CA myca") || !strings.Contains(out, "Registered CA certificate") {
 		t.Errorf("output should report both generate and register, got %q", out)
+	}
+	if string(cap.jitp) != `{"product_name":"sensor","tags":["prod"]}` {
+		t.Errorf("jitp: got %s", cap.jitp)
+	}
+}
+
+func TestCAGenerateJITPRequiresUpload(t *testing.T) {
+	_, err := execCmd(t, "",
+		"ca", "generate", "--name", "myca", "--jitp-product", "sensor",
+		"--org", "acme", "--data-dir", t.TempDir(),
+	)
+	if err == nil || !strings.Contains(err.Error(), "--jitp-* flags require --upload") {
+		t.Errorf("expected jitp-requires-upload error, got %v", err)
 	}
 }
 
@@ -319,8 +493,8 @@ func TestCAList(t *testing.T) {
 		gotPath = r.URL.Path
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"data":[
-			{"serial":"255","description":"prod CA","not_before":"2026-01-02 00:00:00Z","not_after":"2027-01-02 00:00:00Z"},
-			{"serial":"65535","description":"","not_before":"2026-03-04T09:00:00","not_after":"2026-09-04T09:00:00"}
+			{"serial":"255","description":"prod CA","not_before":"2026-01-02 00:00:00Z","not_after":"2027-01-02 00:00:00Z","jitp":{"product_name":"sensor","tags":["prod"],"description":"Field unit"}},
+			{"serial":"65535","description":"","not_before":"2026-03-04T09:00:00","not_after":"2026-09-04T09:00:00","jitp":null}
 		]}`))
 	}))
 	defer srv.Close()
@@ -336,7 +510,7 @@ func TestCAList(t *testing.T) {
 		t.Errorf("path: got %q", gotPath)
 	}
 	// Serials are displayed as hex.
-	for _, want := range []string{"SERIAL", "DESCRIPTION", "FF", "FF:FF", "prod CA", "2026-01-02"} {
+	for _, want := range []string{"SERIAL", "DESCRIPTION", "FF", "FF:FF", "prod CA", "2026-01-02", "JITP PRODUCT", "sensor"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("table missing %q, got:\n%s", want, out)
 		}
@@ -364,7 +538,7 @@ func TestCAShow(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":{"serial":"99887766","description":"prod CA","not_before":"2026-01-02 00:00:00Z","not_after":"2027-01-02 00:00:00Z"}}`))
+		_, _ = w.Write([]byte(`{"data":{"serial":"99887766","description":"prod CA","not_before":"2026-01-02 00:00:00Z","not_after":"2027-01-02 00:00:00Z","jitp":null}}`))
 	}))
 	defer srv.Close()
 
@@ -379,10 +553,45 @@ func TestCAShow(t *testing.T) {
 	if gotPath != "/api/orgs/acme/ca_certificates/99887766" {
 		t.Errorf("path: got %q", gotPath)
 	}
-	for _, want := range []string{"Serial:", "05:F4:2A:96", "Description:", "prod CA", "Not before:", "2026-01-02"} {
+	for _, want := range []string{"Serial:", "05:F4:2A:96", "Description:", "prod CA", "Not before:", "2026-01-02", "JITP:", "off"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("detail missing %q, got:\n%s", want, out)
 		}
+	}
+}
+
+func TestCAShowJITP(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"serial":"255","description":"prod CA","not_before":"2026-01-02 00:00:00Z","not_after":"2027-01-02 00:00:00Z","jitp":{"product_name":"sensor","tags":["prod","eu"],"description":"Field unit"}}}`))
+	}))
+	defer srv.Close()
+
+	out, err := execCmd(t, "", "ca", "show", "FF", "--org", "acme", "--uri", srv.URL, "--token", "tok")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	for _, want := range []string{"JITP product:", "sensor", "JITP tags:", "prod, eu", "JITP description:", "Field unit"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("detail missing %q, got:\n%s", want, out)
+		}
+	}
+
+	out, err = execCmd(t, "", "ca", "show", "FF", "--org", "acme", "--uri", srv.URL, "--token", "tok", "-o", "json")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var got struct {
+		JITP struct {
+			ProductName string   `json:"product_name"`
+			Tags        []string `json:"tags"`
+		} `json:"jitp"`
+	}
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("json output %q: %v", out, err)
+	}
+	if got.JITP.ProductName != "sensor" || len(got.JITP.Tags) != 2 {
+		t.Errorf("json jitp: %+v", got.JITP)
 	}
 }
 

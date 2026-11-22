@@ -48,11 +48,17 @@ Check your install with `nh --version`.
 
 ### Runtime dependency
 
-Signing and uploading firmware shells out to [`fwup`](https://github.com/fwup-home/fwup),
-which must be on your `PATH`. It is not needed for any other command, or when
-uploading firmware with `--skip-signing`.
-`nh archive upload` also uses it to check an archive's metadata; with
-`--skip-signing` and no `fwup`, it warns and leaves that check to the server.
+Signing and uploading an fwup (`.fw`) image shells out to
+[`fwup`](https://github.com/fwup-home/fwup), which must be on your `PATH`. It is
+not needed for other firmware formats, for any other command, or when uploading
+with `--skip-signing`. `nh archive upload` also uses it to check an archive's
+metadata; with `--skip-signing` and no `fwup`, it warns and leaves that check to
+the server.
+
+Signing an ESP-IDF image shells out to `espsecure.py` (or `espsecure`) from
+[esptool](https://github.com/espressif/esptool) (`pip install esptool`). AtomVM
+packbeams are signed by `nh` itself, and RAUC bundles are signed when they are
+built, so neither needs anything extra.
 
 ## Getting started
 
@@ -81,6 +87,10 @@ If you are using a self-hosted NervesHub installation, you will need to tell `nh
 ```
 nh config set uri https://my.nerves-hub.installation
 ```
+
+Check that `nh` can reach it with `nh status`, which needs no sign-in. It prints
+the configured URI and whether the server answered its health check, and exits
+non-zero when the server is unreachable or reports a problem.
 
 Your token and defaults are saved to `~/.nh/settings.json`. See
 [Configuration](#configuration) below. Migrating from the old Elixir CLI? See
@@ -117,14 +127,40 @@ variable — see [Configuration](#configuration)):
 **`nh org`** — manage organizations
 - `list` — list organizations you belong to
 - `show [name]` — show details for an organization
-- `members [name]` — list members of an organization
+- `members [name]` — list members of an organization (a custom role shows its
+  name, marked `(custom)`)
 - `member <email>` — show an organization member
-- `invite <email> <role>` — invite a user to an organization
+- `invite <email> <role>` — invite a user to an organization; `add-member` is
+  another name for it, since NervesHub always sends an invitation
 - `set-role <email> <role>` — change a member's role
+
+  `invite` and `set-role` take a built-in role (`admin`, `manage` or `view`).
+  The API can't assign custom roles, so assign those in the web UI.
 - `remove-member <email>` — remove a member from an organization
 
 **`nh product`** — manage products
-- `list`, `show <name>`, `create <name>`, `delete <name>`
+- `list`, `show <name>` — list products or show one, with their settings
+  (accepted firmware formats, unique-version and unsigned-firmware rules, and
+  the default device-managed updates grant)
+- `create <name>`, `delete <name>`
+- `update <name>` — change a product's settings; only the flags you pass are
+  sent, and a product cannot be renamed:
+  - `--allow-tool <tool>` / `--disallow-tool <tool>` add or remove a firmware
+    format (`fwup`, `esp-idf`, `atomvm`, `rauc`); repeatable or comma-separated
+  - `--tools <list>` sets the whole list instead, so `--tools fwup` removes
+    every other format. fwup is always kept and cannot be disallowed
+  - `--allow-unsigned-esp-idf`, `--allow-unsigned-atomvm`,
+    `--require-unique-firmware-version`, `--default-managed-updates-allowed`
+    take `=true` or `=false` (on its own, the flag means true)
+
+  A format other than fwup must also be enabled on the NervesHub instance
+  (`ESP_IDF_FIRMWARE_ENABLED`, `ATOMVM_FIRMWARE_ENABLED` or
+  `RAUC_FIRMWARE_ENABLED`) before a product can accept it.
+
+  ```sh
+  nh product update thermostat --allow-tool esp-idf --allow-unsigned-esp-idf
+  nh product update thermostat --disallow-tool atomvm
+  ```
 
 **`nh device`** — manage devices
 - `list` — list devices in a product (`--filter key:value`, `--sort`, `--page`);
@@ -146,7 +182,12 @@ variable — see [Configuration](#configuration)):
   nh device list --query 'metric:battery_soc < 20 and updates = "enabled"'
   ```
 - `show <identifier>` — show details for a device
-- `create <identifier>`, `update <identifier>`, `delete <identifier>`
+- `create <identifier>`, `update <identifier>` — set `--description`, `--tag`
+  (repeatable), `--update-mode off|automatic|device_managed`,
+  `--managed-updates-allowed` and `--connecting-code` (needs NervesHub v2.5.3 or
+  later). The API can't set a device's deployment group: NervesHub assigns one
+  whose version and tag conditions the device matches when it connects
+- `delete <identifier>`
 - `upgrade <identifier> <firmware-uuid>` — upgrade a device to a firmware
 - `move <identifier>` — move a device to another product
 - `reboot <identifier>`, `reconnect <identifier>`
@@ -157,6 +198,10 @@ variable — see [Configuration](#configuration)):
 - `logs <identifier>` — show the log lines a device has sent
   (`--level`, `--search`, `--since`, `--before`, `--limit`, `--order`, `--meta`);
   `-f`/`--follow` tails new lines by polling (`--interval`)
+- `metrics <identifier>` — show the metric readings a device has reported, grouped
+  by metric name (`--key`, `--since`, `--before`, `--limit`, `--order`);
+  `--list-keys` lists the metric names in the fetched reports, and
+  `-f`/`--follow` tails new readings by polling (`--interval`)
 - `run-code <identifier> <code>` — run Elixir code on a device
 - `scripts <identifier>`, `run-script <identifier> <name-or-id>` — support scripts
 - `network-identities <identifier>` — list the keys a device reports holding on
@@ -165,31 +210,69 @@ variable — see [Configuration](#configuration)):
   - `list <identifier>`, `show <identifier> <serial>`, `delete <identifier> <serial>`
   - `generate <identifier>` — generate a device key and CSR or signed certificate locally
   - `upload <identifier> <certificate path>` — upload a certificate for a device
+- `shared-secrets` — manage a device's own shared secrets (`nhd_` keys)
+  - `list <identifier>` — list the device's keys, deactivated ones included
+    (secrets are never listed)
+  - `create <identifier>` — create a key and secret; the secret is shown only
+    once and cannot be fetched again
+  - `delete <identifier> <key>` (alias `deactivate`) — deactivate a key so the
+    device can no longer connect with it (`--yes` skips the prompt)
 
 **`nh firmware`** — manage firmware
 - `list`, `show <uuid>`, `download <uuid>`, `delete <uuid>`
-- `upload [path]` (alias `publish`) — sign (via `fwup`) and upload a firmware file
+- `upload [path]` (alias `publish`) — sign and upload a firmware file
   (`--skip-signing` to skip). Inside a Nerves project the path is optional and the
   built image is detected. `--deploy <group>` (repeatable) points deployment groups
-  at the new firmware once the upload succeeds
+  at the new firmware once the upload succeeds. The format is detected from the
+  file's contents, the image's own metadata is previewed, and an image built for
+  another product is refused:
+
+  | Format | File | Preview read from | Signed with |
+  |---|---|---|---|
+  | `fwup` | `.fw` | `fwup -m` | `fwup --sign`, Ed25519 key from `--key <name>`, `--key-file` or `NERVES_HUB_PRIVATE_KEY` |
+  | `atomvm` | `.avm` | the packbeam's `application.bin` | `nh` itself, with the same Ed25519 keys as fwup (an existing signature is replaced) |
+  | `esp-idf` | `.bin` | the image header and app descriptor | `espsecure.py sign_data --version 2`, RSA-3072 key from `--key <name>` (`<data-dir>/keys/<org>/<name>.rsa.pem`) or `--key-file <pem>`; an already signed image is uploaded as is |
+  | `rauc` | `.raucb` | the manifest's `[update]` and `[meta.nerveshub]` | nothing: bundles are signed when built and uploaded as is |
+
+  A product takes only the formats in its `allowed_update_tools` (`fwup` by
+  default; `nh product update <product> --allow-tool <format>`), and may accept
+  unsigned ESP-IDF or AtomVM images (`--allow-unsigned-esp-idf` /
+  `--allow-unsigned-atomvm`). `list` and `show` report each firmware's format
+  (`tool`), and `show` its size
 
 **`nh archive`** — manage archives (supporting fwup files a deployment group
 release can deliver to devices)
 - `list`, `show <uuid>`, `download <uuid>` (`--file <path>`, or `--file -` for stdout)
 - `upload <path>` — check the archive's metadata (its `meta-version` must be
-  SemVer), sign it (via `fwup`), and upload it (`--key`, `--password`,
-  `--skip-signing`). The API has no archive delete
+  SemVer), sign it (via `fwup`), and upload it (`--key`, `--key-file`,
+  `--password`, `--skip-signing`). The API has no archive delete
 
 **`nh deployment`** — manage deployment groups
 - `list`, `show <name>`, `create <name>`, `update <name>`, `delete <name>`
 
-**`nh key`** — manage firmware signing keys
-- `list`, `show <name>`, `create <name>`, `delete <name>`
+**`nh key`** — manage firmware signing keys (see [Signing key schemes](#signing-key-schemes))
+- `list`, `show <name>` — include each key's `scheme`; for an RSA key the Secure
+  Boot v2 eFuse digest, for a certificate its SHA-256 fingerprint
+- `create <name>` — generate a keypair locally and register its public key;
+  `--scheme ed25519` (default, `--password` optional) or `--scheme secure_boot_v2_rsa`
+- `add <name> --public-key <file>` — register an existing public key or
+  certificate without generating anything; `--scheme` is detected from the file
+  when omitted, and the key is checked locally before it is sent
+- `delete <name>` — delete the key from the server; local key files are kept and listed
 
 **`nh ca`** — manage organization CA certificates
-- `generate` — generate a CA certificate locally
-- `upload [name]` — register a CA certificate with the organization
-- `list`, `show <serial>`, `delete <serial>`
+- `generate` — generate a CA certificate locally (`--upload` registers it, and
+  takes the `--jitp-*` flags below)
+- `upload [name]` — register a CA certificate with the organization.
+  `--jitp-product <name>` turns on just-in-time provisioning: a device whose
+  certificate the CA signed is created in that product on its first connection,
+  with `--jitp-tag` (repeatable or comma-separated) and `--jitp-description`.
+  Naming the product needs NervesHub v2.5.0 or later
+- `list`, `show <serial>`, `delete <serial>` — `list` and `show` include each
+  CA's JITP product, tags and description
+
+**`nh status`** — check that the configured server is up (`GET /status/alive`,
+no sign-in needed); `--timeout` sets how long to wait
 
 **`nh iroh-endpoint`** (alias `iroh`) — manage an organization's iroh endpoint ids
 - `list` — list registered endpoints; `--owner device|user|none`, `--search <text>`
@@ -203,6 +286,45 @@ release can deliver to devices)
 
 **`nh migrate`** — import settings and signing keys from the old Elixir CLI (see
 [Migrating from the Elixir CLI](#migrating-from-the-elixir-cli))
+
+### Errors
+
+When the API refuses a request, `nh` prints the status code and the server's
+message, followed by one line per invalid field. Errors on nested fields are
+shown by path, with list positions in brackets:
+
+```text
+api: 422: Unprocessable Entity
+  conditions.version: is invalid
+  devices[2].identifier: can't be blank
+```
+
+If the response carries a `Retry-After` header, as NervesHub's 503 during
+maintenance does, the wait is shown too: `api: 503: … (retry after 5m)`.
+
+### Signing key schemes
+
+Every signing key has a `scheme`, and a key only verifies firmware of its own
+scheme. Which one you need depends on the firmware format you upload:
+
+| Firmware format | Scheme | Key string | Create or register |
+| --- | --- | --- | --- |
+| fwup `.fw` (Nerves) | `ed25519` | base64 Ed25519 public key (an fwup `.pub`) | `nh key create <name>`, or `nh key add <name> --public-key fwup-key.pub` |
+| ESP-IDF `.bin` (Secure Boot v2) | `secure_boot_v2_rsa` | PEM RSA-3072 public key | `nh key create <name> --scheme secure_boot_v2_rsa`, or `nh key add <name> --public-key key.pem` |
+| RAUC bundle | `x509_certificate` | PEM X.509 certificate (optionally followed by its issuers) | `nh key add <name> --scheme x509_certificate --public-key cert.pem` |
+
+Keys `nh key create` generates live in `<data-dir>/keys/<org>/`:
+
+- `ed25519`: `<name>.priv` (encrypted with an optional password) and `<name>.pub`.
+- `secure_boot_v2_rsa`: `<name>.rsa.pem`, an **unencrypted** PKCS#1 PEM private
+  key (mode 0600), and `<name>.rsa.pub.pem`. It is the same format
+  `espsecure.py generate_signing_key --version 2 --scheme rsa3072` writes, so
+  `espsecure.py sign_data --version 2 --keyfile <name>.rsa.pem` can use it
+  directly. It is left unencrypted because espsecure needs a plain key file;
+  protect it accordingly.
+
+`nh key add` accepts an espsecure PEM private key too, and sends only its public
+half. It never accepts a certificate file that also holds a private key.
 
 ## Configuration
 
@@ -230,6 +352,7 @@ self-hosted NervesHub (or a staging environment):
 
 ```sh
 nh config set uri https://nerves-hub.your-company.com
+nh status   # check that nh can reach it
 ```
 
 Like org and product, a saved `uri` is the lowest-precedence source: the `--uri`
@@ -257,7 +380,7 @@ Every variable is read with the `NERVES_HUB_` prefix and, equivalently, the
 | `NERVES_HUB_PRODUCT` | Default product scope | saved settings |
 | `NERVES_HUB_DATA_DIR` | Directory for local state (settings, keys) | `~/.nh` |
 | `NERVES_HUB_NON_INTERACTIVE` | Disable all prompts; missing input is an error (useful in CI) | `false` |
-| `NERVES_HUB_PRIVATE_KEY` | Unencrypted base64 signing key for `firmware upload` and `archive upload` (alternative to `--key`) | — |
+| `NERVES_HUB_PRIVATE_KEY` | Unencrypted base64 Ed25519 signing key for `firmware upload` of fwup and AtomVM images, and for `archive upload` (alternative to `--key`) | — |
 | `NERVES_HUB_DEPLOYMENT_NAME` | Deployment group `firmware upload` updates when `--deploy` is not given | — |
 
 Boolean variables accept `1`, `true`, `yes`, `y`, or `on` (case-insensitive).
@@ -298,7 +421,8 @@ behavior in `internal/`:
 - `cmd/` — Cobra command definitions and flag parsing; no business logic
 - `internal/api/` — HTTP client and API request/response types
 - `internal/config/` — URI / token / data-dir handling and environment binding
-- `internal/pki/` — X.509 certificate and Ed25519 signing-key handling
+- `internal/pki/` — X.509 certificate handling and signing keys (Ed25519,
+  Secure Boot v2 RSA-3072, RAUC certificates)
 - `internal/phoenix/` — Phoenix Channels client (device console / shell)
 - `internal/mix/` — Mix / Nerves project integration helpers
 - `internal/semver/` — Semantic Versioning 2.0.0 checks (archive versions)

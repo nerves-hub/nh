@@ -25,8 +25,10 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"os"
 
 	"github.com/nerves-hub/nh/internal/config"
+	"github.com/nerves-hub/nh/internal/pki"
 	"github.com/spf13/cobra"
 )
 
@@ -34,9 +36,14 @@ import (
 var keyDeleteCmd = &cobra.Command{
 	Use:   "delete <name>",
 	Short: "Delete a signing key",
-	Long:  "Delete a signing key from the organization (set with --org or NERVES_HUB_ORG) by its name.",
-	Args:  keyNameArgs,
-	RunE:  runKeyDelete,
+	Long: `Delete a signing key from the organization (set with --org or NERVES_HUB_ORG) by its name.
+
+Only the key registered with the server is deleted. Any local key files under
+<data-dir>/keys/<org>/ (<name>.priv and <name>.pub for ed25519, <name>.rsa.pem
+and <name>.rsa.pub.pem for secure_boot_v2_rsa) are left in place and listed,
+so you can still sign with the key or delete them yourself.`,
+	Args: keyNameArgs,
+	RunE: runKeyDelete,
 }
 
 func init() {
@@ -76,6 +83,28 @@ func runKeyDelete(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	fmt.Fprintf(cmd.OutOrStdout(), "Deleted signing key %s\n", name)
+	w := cmd.OutOrStdout()
+	fmt.Fprintf(w, "Deleted signing key %s\n", name)
+	if kept := localKeyFiles(cfg.DataDir, org, name); len(kept) > 0 {
+		fmt.Fprintln(w, "Local key files were left in place:")
+		for _, p := range kept {
+			fmt.Fprintf(w, "  %s\n", p)
+		}
+	}
 	return nil
+}
+
+// localKeyFiles lists the local files nh holds for key name, of any scheme.
+// A name that is not a safe filename has none.
+func localKeyFiles(dataDir, org, name string) []string {
+	if validKeyName(name) != nil {
+		return nil
+	}
+	var found []string
+	for _, p := range pki.LocalKeyPaths(dataDir, org, name) {
+		if _, err := os.Stat(p); err == nil {
+			found = append(found, p)
+		}
+	}
+	return found
 }

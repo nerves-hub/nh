@@ -25,6 +25,7 @@ package cmd
 import (
 	"fmt"
 
+	"github.com/nerves-hub/nh/internal/api"
 	"github.com/nerves-hub/nh/internal/config"
 	"github.com/spf13/cobra"
 )
@@ -34,7 +35,8 @@ var orgMemberCmd = &cobra.Command{
 	Use:   "member <email>",
 	Short: "Show an organization member",
 	Long: `Show membership details (name, email, role) for a single member of an
-organization, by email.
+organization, by email. A member holding one of the organization's custom
+roles shows that role's name, marked "(custom)".
 
 The organization comes from --org, NERVES_HUB_ORG, or your saved settings.`,
 	Args: exactlyOneArg(
@@ -75,6 +77,21 @@ func runOrgMember(cmd *cobra.Command, args []string) error {
 	tw := newTableWriter(w)
 	fmt.Fprintf(tw, "Name:\t%s\n", orDash(member.Name))
 	fmt.Fprintf(tw, "Email:\t%s\n", member.Email)
-	fmt.Fprintf(tw, "Role:\t%s\n", member.Role)
+	fmt.Fprintf(tw, "Role:\t%s\n", memberRole(*member))
 	return tw.Flush()
+}
+
+// memberRole formats a member's role for table output: a built-in role as is,
+// a custom role's name marked "(custom)", and "-" when the server sent
+// neither.
+func memberRole(m api.OrgMember) string {
+	name, custom := m.EffectiveRole()
+	switch {
+	case name == "":
+		return "-"
+	case custom:
+		return name + " (custom)"
+	default:
+		return name
+	}
 }

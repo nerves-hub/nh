@@ -8,8 +8,8 @@ import (
 )
 
 const firmwaresResponse = `{"data":[
-	{"uuid":"uuid-1","version":"1.2.3","platform":"rpi4","architecture":"arm","inserted_at":"2026-01-02 00:00:00Z"},
-	{"uuid":"uuid-2","version":"1.3.0","platform":"rpi4","architecture":"arm","inserted_at":"2026-02-02 00:00:00Z"}
+	{"uuid":"uuid-1","version":"1.2.3","platform":"rpi4","architecture":"arm","tool":"fwup","size":1048576,"inserted_at":"2026-01-02 00:00:00Z"},
+	{"uuid":"uuid-2","version":"1.3.0","platform":"atomvm","architecture":"beam","tool":"atomvm","size":2048,"inserted_at":"2026-02-02 00:00:00Z"}
 ]}`
 
 func TestFirmwareList(t *testing.T) {
@@ -32,7 +32,7 @@ func TestFirmwareList(t *testing.T) {
 	if gotPath != "/api/orgs/acme/products/thermostat/firmwares" {
 		t.Errorf("path: got %q", gotPath)
 	}
-	for _, want := range []string{"VERSION", "PLATFORM", "ARCHITECTURE", "UUID", "1.2.3", "uuid-1", "1.3.0"} {
+	for _, want := range []string{"VERSION", "FORMAT", "PLATFORM", "ARCHITECTURE", "UUID", "1.2.3", "uuid-1", "1.3.0", "fwup", "atomvm"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("table output missing %q, got:\n%s", want, out)
 		}
@@ -64,7 +64,7 @@ func TestFirmwareShow(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":{"uuid":"uuid-1","version":"1.2.3","platform":"rpi4","architecture":"arm","author":"acme","inserted_at":"2026-01-02 00:00:00Z"}}`))
+		_, _ = w.Write([]byte(`{"data":{"uuid":"uuid-1","version":"1.2.3","platform":"rpi4","architecture":"arm","author":"acme","tool":"esp-idf","size":1432112,"inserted_at":"2026-01-02 00:00:00Z"}}`))
 	}))
 	defer srv.Close()
 
@@ -79,7 +79,8 @@ func TestFirmwareShow(t *testing.T) {
 	if gotPath != "/api/orgs/acme/products/thermostat/firmwares/uuid-1" {
 		t.Errorf("path: got %q", gotPath)
 	}
-	for _, want := range []string{"UUID:", "uuid-1", "Version:", "1.2.3", "Platform:", "rpi4", "Author:", "acme"} {
+	for _, want := range []string{"UUID:", "uuid-1", "Version:", "1.2.3", "Platform:", "rpi4", "Author:", "acme",
+		"Format:", "esp-idf", "Size:", "1.4 MiB (1432112 bytes)"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("detail output missing %q, got:\n%s", want, out)
 		}
@@ -89,7 +90,7 @@ func TestFirmwareShow(t *testing.T) {
 func TestFirmwareShowJSON(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":{"uuid":"uuid-1","version":"1.2.3"}}`))
+		_, _ = w.Write([]byte(`{"data":{"uuid":"uuid-1","version":"1.2.3","tool":"rauc","size":10}}`))
 	}))
 	defer srv.Close()
 
@@ -101,8 +102,16 @@ func TestFirmwareShowJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if !strings.Contains(out, `"uuid": "uuid-1"`) {
-		t.Errorf("json output expected, got %q", out)
+	for _, want := range []string{`"uuid": "uuid-1"`, `"tool": "rauc"`, `"size": 10`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("json output missing %s, got %q", want, out)
+		}
+	}
+	// Fields the server never sends are not invented.
+	for _, gone := range []string{"fwup_version", "updated_at"} {
+		if strings.Contains(out, gone) {
+			t.Errorf("json output should not carry %s, got %q", gone, out)
+		}
 	}
 }
 

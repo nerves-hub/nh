@@ -36,6 +36,7 @@ import (
 
 	"github.com/nerves-hub/nh/internal/api"
 	"github.com/nerves-hub/nh/internal/config"
+	"github.com/nerves-hub/nh/internal/pki"
 	"github.com/nerves-hub/nh/internal/semver"
 	"github.com/schollz/progressbar/v3"
 	"github.com/spf13/cobra"
@@ -55,8 +56,10 @@ archive missing any of these is refused here rather than by the server.
 The archive is signed before uploading unless --skip-signing is passed. Signing
 runs fwup, which must be installed. The private key comes from, in order:
 
-  1. --key <name>, a signing key created with ` + "`nh key create`" + ` (if it is
-     password protected, supply --password or you will be prompted), or
+  1. --key <name>, a signing key created with ` + "`nh key create`" + `, or
+     --key-file <path>, an fwup private key such as ` + "`fwup -g`" + ` writes (if
+     either is password protected, supply --password or you will be
+     prompted), or
   2. NERVES_HUB_PRIVATE_KEY, an unencrypted base64 private key.
 
 NervesHub only accepts archives signed with one of the organization's keys.`,
@@ -69,7 +72,8 @@ NervesHub only accepts archives signed with one of the organization's keys.`,
 
 func init() {
 	archiveUploadCmd.Flags().String("key", "", "signing key name (default: NERVES_HUB_PRIVATE_KEY)")
-	archiveUploadCmd.Flags().String("password", "", "passphrase for the signing key (with --key)")
+	archiveUploadCmd.Flags().String("key-file", "", "signing key file: an fwup private key, or a key as `nh key create` stores it")
+	archiveUploadCmd.Flags().String("password", "", "passphrase for an encrypted signing key (with --key or --key-file)")
 	archiveUploadCmd.Flags().Bool("skip-signing", false, "upload the archive without signing it")
 	archiveCmd.AddCommand(archiveUploadCmd)
 }
@@ -93,27 +97,34 @@ func runArchiveUpload(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	skipSigning, _ := cmd.Flags().GetBool("skip-signing")
-	keyName, _ := cmd.Flags().GetString("key")
-	if skipSigning && keyName != "" {
-		return errors.New("use only one of --key or --skip-signing")
+	var flags signingFlags
+	flags.skip, _ = cmd.Flags().GetBool("skip-signing")
+	flags.keyName, _ = cmd.Flags().GetString("key")
+	flags.keyFile, _ = cmd.Flags().GetString("key-file")
+	flags.password = cmd.Flags().Changed("password")
+	if flags.keyName != "" && flags.keyFile != "" {
+		return errors.New("use only one of --key or --key-file")
+	}
+	if flags.skip && flags.keyGiven() {
+		return errors.New("use only one of --key/--key-file or --skip-signing")
 	}
 
-	if err := reviewArchive(cmd, path, skipSigning); err != nil {
+	if err := reviewArchive(cmd, path, flags.skip); err != nil {
 		return err
 	}
 
 	uploadPath := path
-	if !skipSigning {
-		if keyName == "" && config.Env("PRIVATE_KEY") == "" {
-			return errors.New("no signing key: pass --key <name>, set NERVES_HUB_PRIVATE_KEY, or pass --skip-signing to upload the archive as is")
+	if !flags.skip {
+		if !flags.keyGiven() && config.Env("PRIVATE_KEY") == "" {
+			return errors.New("no signing key: pass --key <name> or --key-file <path>, set NERVES_HUB_PRIVATE_KEY, " +
+				"or pass --skip-signing to upload the archive as is")
 		}
-		privateKey, keyLabel, err := resolveUploadSigningKey(cmd, cfg, org, keyName)
+		privateKey, keyLabel, err := resolveUploadSigningKey(cmd, cfg, org, flags)
 		if err != nil {
 			return err
 		}
 		fmt.Fprintf(cmd.ErrOrStderr(), "Signing %s with %s\n", filepath.Base(path), keyLabel)
-		signedPath, err := signFirmware(cmd.Context(), path, privateKey)
+		signedPath, err := signFirmware(cmd.Context(), path, pki.PrivateKeyString(privateKey))
 		if err != nil {
 			return err
 		}

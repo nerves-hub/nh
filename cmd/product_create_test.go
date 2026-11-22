@@ -19,7 +19,7 @@ func TestProductCreate(t *testing.T) {
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		gotName = body.Name
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":{"id":3,"name":"doorbell","inserted_at":"2026-01-02T15:04:05","updated_at":"2026-01-02T15:04:05"}}`))
+		_, _ = w.Write([]byte(`{"data":{"name":"doorbell","allowed_update_tools":["fwup"],"require_unique_firmware_version":true}}`))
 	}))
 	defer srv.Close()
 
@@ -39,6 +39,30 @@ func TestProductCreate(t *testing.T) {
 	}
 	if !strings.Contains(out, "Created product doorbell in acme") {
 		t.Errorf("output: %q", out)
+	}
+}
+
+// ProductController.create reads Map.take(params, ["name"]): the name is a
+// top-level field. The published OpenAPI spec documents a {"product":{...}}
+// wrapper, which the server would drop and then reject as a missing name.
+func TestProductCreateSendsTopLevelName(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
+			t.Errorf("content type: want application/json, got %q", got)
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"data":{"name":"doorbell"}}`))
+	}))
+	defer srv.Close()
+
+	if _, err := execCmd(t, "", "product", "create", "doorbell", "--org", "acme", "--uri", srv.URL, "--token", "tok"); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(body) != 1 || body["name"] != "doorbell" {
+		t.Errorf(`body: want exactly {"name":"doorbell"}, got %v`, body)
 	}
 }
 

@@ -10,6 +10,10 @@ import (
 	"testing"
 )
 
+// fwupTestData stands in for an fwup archive: the zip magic the format is
+// detected by, then filler.
+const fwupTestData = "PK\x03\x04FWDATA"
+
 func TestFirmwareUpload(t *testing.T) {
 	var gotMethod, gotPath, gotCT, gotName, gotContent string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -33,7 +37,7 @@ func TestFirmwareUpload(t *testing.T) {
 	defer srv.Close()
 
 	path := filepath.Join(t.TempDir(), "image.fw")
-	if err := os.WriteFile(path, []byte("FWDATA"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(fwupTestData), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -58,7 +62,7 @@ func TestFirmwareUpload(t *testing.T) {
 	if gotName != "image.fw" {
 		t.Errorf("uploaded filename: got %q", gotName)
 	}
-	if gotContent != "FWDATA" {
+	if gotContent != fwupTestData {
 		t.Errorf("uploaded content: got %q", gotContent)
 	}
 	if !strings.Contains(out, "1.4.0") || !strings.Contains(out, "new-uuid") {
