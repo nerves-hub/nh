@@ -65,6 +65,10 @@ type Device struct {
 	DeploymentGroup   *DeploymentGroup  `json:"deployment_group,omitempty"`
 	// Deleted is true for a soft-deleted device.
 	Deleted bool `json:"deleted"`
+	// SharedSecret is only set in the response to a create that asked for
+	// one (DeviceInput.SharedSecret). It carries the secret, which the server
+	// never returns again.
+	SharedSecret *DeviceSharedSecret `json:"shared_secret,omitempty"`
 }
 
 // FirmwareMetadata describes the firmware currently running on a device.
@@ -279,6 +283,11 @@ type DeviceInput struct {
 	// ConnectingCode is Elixir code the device runs each time it connects;
 	// "" clears it. The API never returns it.
 	ConnectingCode *string
+	// SharedSecret asks a create to also issue the device's own shared
+	// secret, in the same transaction. It is sent as the top-level
+	// "shared_secret", not under "device", and only on create: updates
+	// ignore it.
+	SharedSecret bool
 }
 
 // deviceBody is the JSON shape of a device write. Identifier is only used on
@@ -312,6 +321,9 @@ func (in DeviceInput) body(identifier string) deviceBody {
 // leave every field nh sends unchanged.
 type deviceWriteBody struct {
 	Device deviceBody `json:"device"`
+	// SharedSecret is read from the top level of the body, outside
+	// "device" (DeviceController.cast_shared_secret/1). Create only.
+	SharedSecret bool `json:"shared_secret,omitempty"`
 }
 
 func (in DeviceInput) writeBody(identifier string) deviceWriteBody {
@@ -321,12 +333,16 @@ func (in DeviceInput) writeBody(identifier string) deviceWriteBody {
 // CreateDevice registers a device via
 // POST /orgs/{org}/products/{product}/devices, with the identifier and the
 // other fields in the body under a "device" key (see deviceWriteBody). The
-// server answers 201 Created with the new device.
+// server answers 201 Created with the new device. With in.SharedSecret, the
+// body also carries "shared_secret": true and the device comes back with its
+// new shared secret in SharedSecret; when the platform has device shared
+// secrets turned off the server refuses (422) and creates no device.
 func (c *Client) CreateDevice(ctx context.Context, org, product, identifier string, in DeviceInput) (*Device, error) {
 	if err := requireDeviceScope(org, product, identifier); err != nil {
 		return nil, err
 	}
 	body := in.writeBody(identifier)
+	body.SharedSecret = in.SharedSecret
 
 	var resp struct {
 		Data Device `json:"data"`

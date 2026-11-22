@@ -203,19 +203,19 @@ func TestDeviceSharedSecretsCreateJSON(t *testing.T) {
 func TestDeviceSharedSecretsCreateWithoutSecret(t *testing.T) {
 	srv, _ := sharedSecretServer(t, http.StatusCreated, `{"data":{"key":"nhd_new","deactivated_at":null,"last_used":null,"inserted_at":"2026-10-08T12:00:00Z"}}`)
 
-	stdout, stderr, err := execCmdSplit(t, "",
+	stdout, _, err := execCmdSplit(t, "",
 		"device", "shared-secrets", "create", "dev-001",
 		"--org", "acme", "--product", "thermostat",
 		"--uri", srv.URL, "--token", "tok",
 	)
-	if err != nil {
-		t.Fatalf("Execute: %v", err)
-	}
 	if strings.Contains(stdout, "Secret:") {
 		t.Errorf("no secret line when the server returns none, got:\n%s", stdout)
 	}
-	if !strings.Contains(stderr, "did not return the secret") {
-		t.Errorf("stderr: %q", stderr)
+	// The key is useless without its secret, so this fails and says how to
+	// clean up.
+	if err == nil || !strings.Contains(err.Error(), "without its secret") ||
+		!strings.Contains(err.Error(), "nh device shared-secrets delete dev-001 nhd_new") {
+		t.Errorf("want an error with the cleanup command, got %v", err)
 	}
 }
 
