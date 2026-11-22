@@ -125,10 +125,15 @@ variable — see [Configuration](#configuration)):
 **`nh org`** — manage organizations
 - `list` — list organizations you belong to
 - `show [name]` — show details for an organization
-- `members [name]` — list members of an organization
+- `members [name]` — list members of an organization (a custom role shows its
+  name, marked `(custom)`)
 - `member <email>` — show an organization member
-- `invite <email> <role>` — invite a user to an organization
+- `invite <email> <role>` — invite a user to an organization; `add-member` is
+  another name for it, since NervesHub always sends an invitation
 - `set-role <email> <role>` — change a member's role
+
+  `invite` and `set-role` take a built-in role (`admin`, `manage` or `view`).
+  The API can't assign custom roles, so assign those in the web UI.
 - `remove-member <email>` — remove a member from an organization
 
 **`nh product`** — manage products

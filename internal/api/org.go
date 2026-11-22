@@ -39,9 +39,9 @@ type Org struct {
 }
 
 // OrgProduct is a product summary embedded in an Org when products are
-// included.
+// included. The server renders each product with ProductJSON.product/1, which
+// has no id, so only the name is decoded.
 type OrgProduct struct {
-	ID   int    `json:"id"`
 	Name string `json:"name"`
 }
 
@@ -72,10 +72,28 @@ func (c *Client) GetOrg(ctx context.Context, name string) (*Org, error) {
 
 // OrgMember is a user belonging to an organization, as returned by
 // GET /api/orgs/{org}/users.
+//
+// A member holds either a built-in Role (admin, manage or view) or one of the
+// org's custom roles, never both: Role is null when CustomRole, the custom
+// role's name, is set. Both are pointers so JSON output keeps those nulls.
 type OrgMember struct {
-	Name  string `json:"name"`
-	Email string `json:"email"`
-	Role  string `json:"role"`
+	Name       string  `json:"name"`
+	Email      string  `json:"email"`
+	Role       *string `json:"role"`
+	CustomRole *string `json:"custom_role"`
+}
+
+// EffectiveRole returns the name of the role the member holds and whether it
+// is one of the org's custom roles. It returns "" when the server sent
+// neither.
+func (m OrgMember) EffectiveRole() (name string, custom bool) {
+	if m.CustomRole != nil && *m.CustomRole != "" {
+		return *m.CustomRole, true
+	}
+	if m.Role != nil {
+		return *m.Role, false
+	}
+	return "", false
 }
 
 // ListOrgMembers returns the members of an organization via
