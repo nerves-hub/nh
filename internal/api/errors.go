@@ -160,7 +160,11 @@ func decodeErrors(raw json.RawMessage, message string) (map[string][]string, str
 		if json.Unmarshal(raw, &asMap) != nil {
 			return nil, message
 		}
-		for k, v := range asMap {
+		// Sorted, as in flattenErrors, so two keys that flatten to one path
+		// ("a.b" and a nested "a" -> "b") list their messages in a stable
+		// order.
+		for _, k := range sortedKeys(asMap) {
+			v := asMap[k]
 			if k == "detail" && message == "" {
 				if msgs, ok := stringList(v); ok && len(msgs) == 1 {
 					message = msgs[0]
@@ -205,6 +209,16 @@ func decodeErrors(raw json.RawMessage, message string) (map[string][]string, str
 	return fields, message
 }
 
+// sortedKeys returns m's keys in sorted order.
+func sortedKeys(m map[string]json.RawMessage) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 // flattenErrors walks one value of a traverse_errors map, adding its
 // messages to out under path. Strings are messages; objects nest by key
 // ("a.b"); lists of strings are messages, and anything else in a list nests
@@ -218,12 +232,7 @@ func flattenErrors(path string, raw json.RawMessage, out map[string][]string) {
 		}
 		// Sorted, so two keys that flatten to one path ("a.b" and a
 		// nested "a" -> "b") list their messages in a stable order.
-		keys := make([]string, 0, len(m))
-		for k := range m {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		for _, k := range keys {
+		for _, k := range sortedKeys(m) {
 			flattenErrors(joinFieldPath(path, k), m[k], out)
 		}
 	case '[':
