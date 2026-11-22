@@ -125,7 +125,24 @@ variable — see [Configuration](#configuration)):
 - `list`, `show <name>`, `create <name>`, `delete <name>`
 
 **`nh device`** — manage devices
-- `list` — list devices in a product
+- `list` — list devices in a product (`--filter key:value`, `--sort`, `--page`);
+  `-q`/`--query` takes the web UI search bar's advanced query language,
+  including custom health metrics (needs NervesHub v2.5.0 or later; see
+  `nh device list --help` for each column's operators):
+
+  ```sh
+  # Devices whose latest cpu_temp reading is over 70
+  nh device list --query 'metric:cpu_temp > 70'
+
+  # Connected production devices
+  nh device list --query 'connection = "connected" and tags contains "prod"'
+
+  # Devices that need attention
+  nh device list --query 'health_status != "healthy" or alarm_status = "with"'
+
+  # Low battery on devices that would accept an update
+  nh device list --query 'metric:battery_soc < 20 and updates = "enabled"'
+  ```
 - `show <identifier>` — show details for a device
 - `create <identifier>`, `update <identifier>`, `delete <identifier>`
 - `upgrade <identifier> <firmware-uuid>` — upgrade a device to a firmware

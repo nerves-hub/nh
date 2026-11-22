@@ -25,6 +25,8 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -88,6 +90,11 @@ type ListDevicesOptions struct {
 	// Sort is the column to order by; SortDirection is "asc" or "desc".
 	Sort          string
 	SortDirection string
+	// Query is an expression in the server's advanced query language (the
+	// same one the web UI's search bar uses), sent as
+	// filters[advanced_query]. It takes precedence over an advanced_query
+	// key in Filters.
+	Query string
 	// Filters are passed through verbatim as filters[key]=value, so new
 	// server-side filters work without client changes.
 	Filters map[string]string
@@ -127,6 +134,9 @@ func (c *Client) ListDevices(ctx context.Context, org, product string, opts List
 	for key, value := range opts.Filters {
 		query.Set("filters["+key+"]", value)
 	}
+	if opts.Query != "" {
+		query.Set("filters[advanced_query]", opts.Query)
+	}
 
 	var result DeviceList
 	path := "/orgs/" + url.PathEscape(org) + "/products/" + url.PathEscape(product) + "/devices"
@@ -134,6 +144,36 @@ func (c *Client) ListDevices(ctx context.Context, org, product string, opts List
 		return nil, err
 	}
 	return &result, nil
+}
+
+// AdvancedQueryProbe is the query SupportsAdvancedQuery sends. It names a
+// column no NervesHub has and compares it with a quoted value, so a server
+// that knows the advanced query can only reject it as a parse error: input
+// with an operator and a quote is never taken as free text.
+const AdvancedQueryProbe = `nh_support_probe = "x"`
+
+// SupportsAdvancedQuery reports whether the server applies
+// filters[advanced_query] to the device list. NervesHub v2.5.0 and later
+// answer the unparseable AdvancedQueryProbe with 422. Older servers either
+// drop the unknown filter, answering with every device, or fail on it with a
+// 500. Other errors, including 502, 503 and 504 from a proxy, are returned,
+// since they say nothing about the server's version. It costs one request
+// for a single device.
+func (c *Client) SupportsAdvancedQuery(ctx context.Context, org, product string) (bool, error) {
+	_, err := c.ListDevices(ctx, org, product, ListDevicesOptions{PageSize: 1, Query: AdvancedQueryProbe})
+	if err == nil {
+		return false, nil
+	}
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		switch apiErr.StatusCode {
+		case http.StatusUnprocessableEntity:
+			return true, nil
+		case http.StatusInternalServerError:
+			return false, nil
+		}
+	}
+	return false, fmt.Errorf("checking advanced query support: %w", err)
 }
 
 // GetDevice returns a single device by identifier via

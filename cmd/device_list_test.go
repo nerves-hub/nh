@@ -3,8 +3,11 @@ package cmd
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/nerves-hub/nh/internal/api"
 )
 
 const devicesResponse = `{"data":[
@@ -219,6 +222,202 @@ func TestDeviceListFilters(t *testing.T) {
 	}
 	if gotConnection != "not_seen" || gotTag != "prod" {
 		t.Errorf("filter query: got filters[connection]=%q filters[tag]=%q", gotConnection, gotTag)
+	}
+}
+
+// queryServer answers like NervesHub v2.5.0+: the probe nh sends to check
+// advanced query support gets a 422 parse error, and any other request gets
+// the device list from devices. It records the last non-probe query.
+func queryServer(t *testing.T, devices string, got *url.Values) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("filters[advanced_query]") == api.AdvancedQueryProbe {
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = w.Write([]byte(`{"errors":{"detail":"invalid advanced query: \"nh_support_probe\" is not a valid column (at character 0)"}}`))
+			return
+		}
+		*got = r.URL.Query()
+		_, _ = w.Write([]byte(devices))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestDeviceListAdvancedQuery(t *testing.T) {
+	var got url.Values
+	srv := queryServer(t, `{"data":[]}`, &got)
+
+	query := `metric:cpu_temp > 70 and connection = "connected"`
+	out, err := execCmd(t, "",
+		"device", "list",
+		"--org", "acme", "--product", "thermostat",
+		"--query", "  "+query+"\n",
+		"--uri", srv.URL, "--token", "tok",
+	)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	// The expression is sent, trimmed, as the advanced_query filter.
+	if q := got.Get("filters[advanced_query]"); q != query {
+		t.Errorf("query param: want %q, got %q", query, q)
+	}
+	if !strings.Contains(out, "No devices in acme/thermostat match the given --query/--filter.") {
+		t.Errorf("an empty result should say nothing matched, got %q", out)
+	}
+}
+
+func TestDeviceListQueryCombinesWithFilters(t *testing.T) {
+	var got url.Values
+	srv := queryServer(t, `{"data":[]}`, &got)
+
+	_, err := execCmd(t, "",
+		"device", "list",
+		"--org", "acme", "--product", "thermostat",
+		"--query", "metric:cpu_temp > 70", "--filter", "tag:prod",
+		"--uri", srv.URL, "--token", "tok",
+	)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if got.Get("filters[advanced_query]") != "metric:cpu_temp > 70" || got.Get("filters[tag]") != "prod" {
+		t.Errorf("both the query and the filter should be sent, got %v", got)
+	}
+}
+
+func TestDeviceListBlankQuery(t *testing.T) {
+	_, err := execCmd(t, "",
+		"device", "list",
+		"--org", "acme", "--product", "thermostat",
+		"--query", " \n",
+		"--uri", "https://example.com", "--token", "tok",
+	)
+	if err == nil || !strings.Contains(err.Error(), "--query is empty") {
+		t.Errorf("want a --query is empty error, got %v", err)
+	}
+}
+
+// Servers before v2.5.0 drop the unknown filter (and list every device) or
+// fail on it; nh refuses instead of printing an unfiltered list.
+func TestDeviceListQueryRefusedOnOldServers(t *testing.T) {
+	for name, status := range map[string]int{"ignores the filter": http.StatusOK, "fails on it": http.StatusInternalServerError} {
+		t.Run(name, func(t *testing.T) {
+			listed := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				listed++
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(status)
+				_, _ = w.Write([]byte(`{"data":[{"identifier":"dev-001","connection_status":"online"}]}`))
+			}))
+			defer srv.Close()
+
+			out, err := execCmd(t, "",
+				"device", "list",
+				"--org", "acme", "--product", "thermostat",
+				"--query", `health_status = "unhealthy"`,
+				"--uri", srv.URL, "--token", "tok",
+			)
+			if err == nil || !strings.Contains(err.Error(), "needs v2.5.0 or later") {
+				t.Errorf("want an unsupported server error, got %v", err)
+			}
+			if strings.Contains(out, "dev-001") || listed != 1 {
+				t.Errorf("only the probe should be sent and nothing listed; requests %d, output %q", listed, out)
+			}
+		})
+	}
+}
+
+// A proxy error says nothing about the server's version, so it is reported
+// as it is rather than as an old server.
+func TestDeviceListQueryProbeGatewayError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	_, err := execCmd(t, "",
+		"device", "list",
+		"--org", "acme", "--product", "thermostat",
+		"--query", `health_status = "unhealthy"`,
+		"--uri", srv.URL, "--token", "tok",
+	)
+	if err == nil || strings.Contains(err.Error(), "v2.5.0") || !strings.Contains(err.Error(), "503") {
+		t.Errorf("want the 503 reported as is, got %v", err)
+	}
+}
+
+// A server that passed the check isn't checked again within a day, from the
+// same data directory.
+func TestDeviceListQueryCheckIsRemembered(t *testing.T) {
+	probes := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("filters[advanced_query]") == api.AdvancedQueryProbe {
+			probes++
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = w.Write([]byte(`{"errors":{"detail":"invalid advanced query"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	defer srv.Close()
+
+	dataDir := t.TempDir()
+	for range 2 {
+		_, err := execCmd(t, "",
+			"device", "list",
+			"--org", "acme", "--product", "thermostat",
+			"--query", "metric:cpu_temp > 70",
+			"--uri", srv.URL, "--token", "tok", "--data-dir", dataDir,
+		)
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+	}
+	if probes != 1 {
+		t.Errorf("want one support check across two lists, got %d", probes)
+	}
+}
+
+func TestDeviceListQueryConflictsWithAdvancedQueryFilter(t *testing.T) {
+	_, err := execCmd(t, "",
+		"device", "list",
+		"--org", "acme", "--product", "thermostat",
+		"--query", "metric:cpu_temp > 70",
+		"--filter", "advanced_query:something",
+		"--uri", "https://example.com", "--token", "tok",
+	)
+	if err == nil || !strings.Contains(err.Error(), "use one") {
+		t.Errorf("expected conflict error, got %v", err)
+	}
+}
+
+func TestDeviceListInvalidQueryShowsServerError(t *testing.T) {
+	var sent []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query().Get("filters[advanced_query]")
+		sent = append(sent, q)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		if q == api.AdvancedQueryProbe {
+			_, _ = w.Write([]byte(`{"errors":{"detail":"invalid advanced query: probe rejected"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"errors":{"detail":"invalid advanced query: \"bogus\" is not a valid column (at character 0)"}}`))
+	}))
+	defer srv.Close()
+
+	_, err := execCmd(t, "",
+		"device", "list",
+		"--org", "acme", "--product", "thermostat",
+		"--query", `bogus = "x"`,
+		"--uri", srv.URL, "--token", "tok",
+	)
+	if err == nil || !strings.Contains(err.Error(), "not a valid column") {
+		t.Errorf("expected the server's parse error for the query to surface, got %v", err)
+	}
+	if len(sent) != 2 || sent[0] != api.AdvancedQueryProbe || sent[1] != `bogus = "x"` {
+		t.Errorf("want the probe and then the query, got %q", sent)
 	}
 }
 
