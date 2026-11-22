@@ -32,23 +32,24 @@ import (
 )
 
 // Firmware is a firmware image belonging to a product, as returned by
-// GET /api/orgs/{org}/products/{product}/firmwares[/{uuid}].
-//
-// Only uuid/version/platform/architecture are documented; the remaining fields
-// are inferred. TODO: confirm against a real response.
+// GET /api/orgs/{org}/products/{product}/firmwares[/{uuid}]. The fields are
+// those rendered by NervesHubWeb.API.FirmwareJSON.
 type Firmware struct {
-	UUID          string    `json:"uuid"`
-	Version       string    `json:"version"`
-	Platform      string    `json:"platform"`
-	Architecture  string    `json:"architecture"`
-	Author        string    `json:"author,omitempty"`
-	Description   string    `json:"description,omitempty"`
-	Product       string    `json:"product,omitempty"`
-	VCSIdentifier string    `json:"vcs_identifier,omitempty"`
-	Misc          string    `json:"misc,omitempty"`
-	FwupVersion   string    `json:"fwup_version,omitempty"`
-	InsertedAt    Timestamp `json:"inserted_at"`
-	UpdatedAt     Timestamp `json:"updated_at"`
+	UUID         string `json:"uuid"`
+	Version      string `json:"version"`
+	Platform     string `json:"platform"`
+	Architecture string `json:"architecture"`
+	// Tool is the update tool, which is the image's format: "fwup",
+	// "esp-idf", "atomvm" or "rauc".
+	Tool          string `json:"tool,omitempty"`
+	Author        string `json:"author,omitempty"`
+	Description   string `json:"description,omitempty"`
+	Product       string `json:"product,omitempty"`
+	VCSIdentifier string `json:"vcs_identifier,omitempty"`
+	Misc          string `json:"misc,omitempty"`
+	// Size is the stored image's size in bytes.
+	Size       int64     `json:"size,omitempty"`
+	InsertedAt Timestamp `json:"inserted_at"`
 }
 
 // ListFirmwares returns the firmwares in a product via
@@ -97,10 +98,9 @@ func (c *Client) GetFirmware(ctx context.Context, org, product, uuid string) (*F
 // UploadFirmware uploads a firmware image to a product via
 // POST /orgs/{org}/products/{product}/firmwares as multipart/form-data, and
 // returns the created firmware. The multipart body is streamed, so large images
-// are not buffered in memory.
-//
-// TODO: confirm the multipart field name ("firmware") and response envelope
-// against a real upload.
+// are not buffered in memory. The file goes in the "firmware" field, which is
+// what NervesHubWeb.API.FirmwareController.create/2 reads; the server works out
+// the format from the bytes, not the filename.
 func (c *Client) UploadFirmware(ctx context.Context, org, product, filename string, r io.Reader) (*Firmware, error) {
 	if org == "" {
 		return nil, errors.New("api: org is required to upload a firmware")

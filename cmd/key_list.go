@@ -26,6 +26,7 @@ import (
 	"fmt"
 
 	"github.com/nerves-hub/nh/internal/config"
+	"github.com/nerves-hub/nh/internal/pki"
 	"github.com/spf13/cobra"
 )
 
@@ -33,9 +34,14 @@ import (
 var keyListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List signing keys in an organization",
-	Long:  "List the signing keys for the organization (set with --org or NERVES_HUB_ORG).",
-	Args:  cobra.NoArgs,
-	RunE:  runKeyList,
+	Long: `List the signing keys for the organization (set with --org or NERVES_HUB_ORG).
+
+The KEY column shows an ed25519 key in full, the Secure Boot v2 eFuse digest
+of a secure_boot_v2_rsa key (what espsecure.py digest_sbv2_public_key prints),
+and the SHA-256 fingerprint of an x509_certificate. Use --output json, or
+nh key show, for the full PEM.`,
+	Args: cobra.NoArgs,
+	RunE: runKeyList,
 }
 
 func init() {
@@ -70,9 +76,10 @@ func runKeyList(cmd *cobra.Command, _ []string) error {
 	}
 
 	tw := newTableWriter(w)
-	fmt.Fprintln(tw, "NAME\tPUBLIC KEY")
+	fmt.Fprintln(tw, "NAME\tSCHEME\tKEY")
 	for _, k := range keys {
-		fmt.Fprintf(tw, "%s\t%s\n", k.Name, orDash(k.Key))
+		scheme := pki.SchemeOrDefault(k.Scheme)
+		fmt.Fprintf(tw, "%s\t%s\t%s\n", k.Name, scheme, orDash(pki.KeyPreview(scheme, k.Key)))
 	}
 	return tw.Flush()
 }

@@ -48,9 +48,15 @@ Check your install with `nh --version`.
 
 ### Runtime dependency
 
-Signing and uploading firmware shells out to [`fwup`](https://github.com/fwup-home/fwup),
-which must be on your `PATH`. It is not needed for any other command, or when
-uploading firmware with `--skip-signing`.
+Signing and uploading an fwup (`.fw`) image shells out to
+[`fwup`](https://github.com/fwup-home/fwup), which must be on your `PATH`. It is
+not needed for other firmware formats, for any other command, or when uploading
+with `--skip-signing`.
+
+Signing an ESP-IDF image shells out to `espsecure.py` (or `espsecure`) from
+[esptool](https://github.com/espressif/esptool) (`pip install esptool`). AtomVM
+packbeams are signed by `nh` itself, and RAUC bundles are signed when they are
+built, so neither needs anything extra.
 
 ## Getting started
 
@@ -122,7 +128,28 @@ variable — see [Configuration](#configuration)):
 - `remove-member <email>` — remove a member from an organization
 
 **`nh product`** — manage products
-- `list`, `show <name>`, `create <name>`, `delete <name>`
+- `list`, `show <name>` — list products or show one, with their settings
+  (accepted firmware formats, unique-version and unsigned-firmware rules, and
+  the default device-managed updates grant)
+- `create <name>`, `delete <name>`
+- `update <name>` — change a product's settings; only the flags you pass are
+  sent, and a product cannot be renamed:
+  - `--allow-tool <tool>` / `--disallow-tool <tool>` add or remove a firmware
+    format (`fwup`, `esp-idf`, `atomvm`, `rauc`); repeatable or comma-separated
+  - `--tools <list>` sets the whole list instead, so `--tools fwup` removes
+    every other format. fwup is always kept and cannot be disallowed
+  - `--allow-unsigned-esp-idf`, `--allow-unsigned-atomvm`,
+    `--require-unique-firmware-version`, `--default-managed-updates-allowed`
+    take `=true` or `=false` (on its own, the flag means true)
+
+  A format other than fwup must also be enabled on the NervesHub instance
+  (`ESP_IDF_FIRMWARE_ENABLED`, `ATOMVM_FIRMWARE_ENABLED` or
+  `RAUC_FIRMWARE_ENABLED`) before a product can accept it.
+
+  ```sh
+  nh product update thermostat --allow-tool esp-idf --allow-unsigned-esp-idf
+  nh product update thermostat --disallow-tool atomvm
+  ```
 
 **`nh device`** — manage devices
 - `list` — list devices in a product (`--filter key:value`, `--sort`, `--page`);
@@ -144,7 +171,12 @@ variable — see [Configuration](#configuration)):
   nh device list --query 'metric:battery_soc < 20 and updates = "enabled"'
   ```
 - `show <identifier>` — show details for a device
-- `create <identifier>`, `update <identifier>`, `delete <identifier>`
+- `create <identifier>`, `update <identifier>` — set `--description`, `--tag`
+  (repeatable), `--update-mode off|automatic|device_managed`,
+  `--managed-updates-allowed` and `--connecting-code` (needs NervesHub v2.5.3 or
+  later). The API can't set a device's deployment group: NervesHub assigns one
+  whose version and tag conditions the device matches when it connects
+- `delete <identifier>`
 - `upgrade <identifier> <firmware-uuid>` — upgrade a device to a firmware
 - `move <identifier>` — move a device to another product
 - `reboot <identifier>`, `reconnect <identifier>`
@@ -155,6 +187,10 @@ variable — see [Configuration](#configuration)):
 - `logs <identifier>` — show the log lines a device has sent
   (`--level`, `--search`, `--since`, `--before`, `--limit`, `--order`, `--meta`);
   `-f`/`--follow` tails new lines by polling (`--interval`)
+- `metrics <identifier>` — show the metric readings a device has reported, grouped
+  by metric name (`--key`, `--since`, `--before`, `--limit`, `--order`);
+  `--list-keys` lists the metric names in the fetched reports, and
+  `-f`/`--follow` tails new readings by polling (`--interval`)
 - `run-code <identifier> <code>` — run Elixir code on a device
 - `scripts <identifier>`, `run-script <identifier> <name-or-id>` — support scripts
 - `network-identities <identifier>` — list the keys a device reports holding on
@@ -166,16 +202,38 @@ variable — see [Configuration](#configuration)):
 
 **`nh firmware`** — manage firmware
 - `list`, `show <uuid>`, `download <uuid>`, `delete <uuid>`
-- `upload [path]` (alias `publish`) — sign (via `fwup`) and upload a firmware file
+- `upload [path]` (alias `publish`) — sign and upload a firmware file
   (`--skip-signing` to skip). Inside a Nerves project the path is optional and the
   built image is detected. `--deploy <group>` (repeatable) points deployment groups
-  at the new firmware once the upload succeeds
+  at the new firmware once the upload succeeds. The format is detected from the
+  file's contents, the image's own metadata is previewed, and an image built for
+  another product is refused:
+
+  | Format | File | Preview read from | Signed with |
+  |---|---|---|---|
+  | `fwup` | `.fw` | `fwup -m` | `fwup --sign`, Ed25519 key from `--key <name>`, `--key-file` or `NERVES_HUB_PRIVATE_KEY` |
+  | `atomvm` | `.avm` | the packbeam's `application.bin` | `nh` itself, with the same Ed25519 keys as fwup (an existing signature is replaced) |
+  | `esp-idf` | `.bin` | the image header and app descriptor | `espsecure.py sign_data --version 2`, RSA-3072 key from `--key <name>` (`<data-dir>/keys/<org>/<name>.rsa.pem`) or `--key-file <pem>`; an already signed image is uploaded as is |
+  | `rauc` | `.raucb` | the manifest's `[update]` and `[meta.nerveshub]` | nothing: bundles are signed when built and uploaded as is |
+
+  A product takes only the formats in its `allowed_update_tools` (`fwup` by
+  default; `nh product update <product> --allow-tool <format>`), and may accept
+  unsigned ESP-IDF or AtomVM images (`--allow-unsigned-esp-idf` /
+  `--allow-unsigned-atomvm`). `list` and `show` report each firmware's format
+  (`tool`), and `show` its size
 
 **`nh deployment`** — manage deployment groups
 - `list`, `show <name>`, `create <name>`, `update <name>`, `delete <name>`
 
-**`nh key`** — manage firmware signing keys
-- `list`, `show <name>`, `create <name>`, `delete <name>`
+**`nh key`** — manage firmware signing keys (see [Signing key schemes](#signing-key-schemes))
+- `list`, `show <name>` — include each key's `scheme`; for an RSA key the Secure
+  Boot v2 eFuse digest, for a certificate its SHA-256 fingerprint
+- `create <name>` — generate a keypair locally and register its public key;
+  `--scheme ed25519` (default, `--password` optional) or `--scheme secure_boot_v2_rsa`
+- `add <name> --public-key <file>` — register an existing public key or
+  certificate without generating anything; `--scheme` is detected from the file
+  when omitted, and the key is checked locally before it is sent
+- `delete <name>` — delete the key from the server; local key files are kept and listed
 
 **`nh ca`** — manage organization CA certificates
 - `generate` — generate a CA certificate locally
@@ -209,6 +267,30 @@ api: 422: Unprocessable Entity
 
 If the response carries a `Retry-After` header, as NervesHub's 503 during
 maintenance does, the wait is shown too: `api: 503: … (retry after 5m)`.
+
+### Signing key schemes
+
+Every signing key has a `scheme`, and a key only verifies firmware of its own
+scheme. Which one you need depends on the firmware format you upload:
+
+| Firmware format | Scheme | Key string | Create or register |
+| --- | --- | --- | --- |
+| fwup `.fw` (Nerves) | `ed25519` | base64 Ed25519 public key (an fwup `.pub`) | `nh key create <name>`, or `nh key add <name> --public-key fwup-key.pub` |
+| ESP-IDF `.bin` (Secure Boot v2) | `secure_boot_v2_rsa` | PEM RSA-3072 public key | `nh key create <name> --scheme secure_boot_v2_rsa`, or `nh key add <name> --public-key key.pem` |
+| RAUC bundle | `x509_certificate` | PEM X.509 certificate (optionally followed by its issuers) | `nh key add <name> --scheme x509_certificate --public-key cert.pem` |
+
+Keys `nh key create` generates live in `<data-dir>/keys/<org>/`:
+
+- `ed25519`: `<name>.priv` (encrypted with an optional password) and `<name>.pub`.
+- `secure_boot_v2_rsa`: `<name>.rsa.pem`, an **unencrypted** PKCS#1 PEM private
+  key (mode 0600), and `<name>.rsa.pub.pem`. It is the same format
+  `espsecure.py generate_signing_key --version 2 --scheme rsa3072` writes, so
+  `espsecure.py sign_data --version 2 --keyfile <name>.rsa.pem` can use it
+  directly. It is left unencrypted because espsecure needs a plain key file;
+  protect it accordingly.
+
+`nh key add` accepts an espsecure PEM private key too, and sends only its public
+half. It never accepts a certificate file that also holds a private key.
 
 ## Configuration
 
@@ -263,7 +345,7 @@ Every variable is read with the `NERVES_HUB_` prefix and, equivalently, the
 | `NERVES_HUB_PRODUCT` | Default product scope | saved settings |
 | `NERVES_HUB_DATA_DIR` | Directory for local state (settings, keys) | `~/.nh` |
 | `NERVES_HUB_NON_INTERACTIVE` | Disable all prompts; missing input is an error (useful in CI) | `false` |
-| `NERVES_HUB_PRIVATE_KEY` | Unencrypted base64 signing key for `firmware upload` (alternative to `--key`) | — |
+| `NERVES_HUB_PRIVATE_KEY` | Unencrypted base64 Ed25519 signing key for `firmware upload` of fwup and AtomVM images (alternative to `--key`) | — |
 | `NERVES_HUB_DEPLOYMENT_NAME` | Deployment group `firmware upload` updates when `--deploy` is not given | — |
 
 Boolean variables accept `1`, `true`, `yes`, `y`, or `on` (case-insensitive).
@@ -304,7 +386,8 @@ behavior in `internal/`:
 - `cmd/` — Cobra command definitions and flag parsing; no business logic
 - `internal/api/` — HTTP client and API request/response types
 - `internal/config/` — URI / token / data-dir handling and environment binding
-- `internal/pki/` — X.509 certificate and Ed25519 signing-key handling
+- `internal/pki/` — X.509 certificate handling and signing keys (Ed25519,
+  Secure Boot v2 RSA-3072, RAUC certificates)
 - `internal/phoenix/` — Phoenix Channels client (device console / shell)
 - `internal/mix/` — Mix / Nerves project integration helpers
 

@@ -24,7 +24,9 @@ package cmd
 
 import (
 	"fmt"
+	"strings"
 
+	"github.com/nerves-hub/nh/internal/api"
 	"github.com/nerves-hub/nh/internal/config"
 	"github.com/spf13/cobra"
 )
@@ -71,9 +73,65 @@ func runProductList(cmd *cobra.Command, _ []string) error {
 	}
 
 	tw := newTableWriter(w)
-	fmt.Fprintln(tw, "NAME")
+	if !anyProductSettings(products) {
+		// A server older than product settings sends names alone.
+		fmt.Fprintln(tw, "NAME")
+		for _, p := range products {
+			fmt.Fprintf(tw, "%s\n", p.Name)
+		}
+		return tw.Flush()
+	}
+
+	fmt.Fprintln(tw, "NAME\tUPDATE TOOLS\tUNIQUE VERSIONS\tUNSIGNED ALLOWED\tDEVICE-MANAGED UPDATES")
 	for _, p := range products {
-		fmt.Fprintf(tw, "%s\n", p.Name)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
+			p.Name,
+			listUpdateTools(p.AllowedUpdateTools),
+			orDash(boolWord(p.RequireUniqueFirmwareVersion, "required", "no")),
+			unsignedAllowed(p),
+			orDash(boolWord(p.DefaultManagedUpdatesAllowed, "allowed", "no")),
+		)
 	}
 	return tw.Flush()
+}
+
+// anyProductSettings reports whether the server sent settings for any of
+// products.
+func anyProductSettings(products []api.Product) bool {
+	for _, p := range products {
+		if p.AllowedUpdateTools != nil || p.RequireUniqueFirmwareVersion != nil ||
+			p.AllowUnsignedESPIDFFirmware != nil || p.AllowUnsignedAtomVMFirmware != nil ||
+			p.DefaultManagedUpdatesAllowed != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// listUpdateTools renders the tools column: "-" when the server did not
+// report the list, "none" when it reported an empty one.
+func listUpdateTools(tools []string) string {
+	if tools == nil {
+		return "-"
+	}
+	return updateToolsText(tools, ",")
+}
+
+// unsignedAllowed lists the formats p accepts unsigned firmware for, "none"
+// when it reports both settings off, or "-" when it reports neither.
+func unsignedAllowed(p api.Product) string {
+	if p.AllowUnsignedESPIDFFirmware == nil && p.AllowUnsignedAtomVMFirmware == nil {
+		return "-"
+	}
+	var formats []string
+	if p.AllowUnsignedESPIDFFirmware != nil && *p.AllowUnsignedESPIDFFirmware {
+		formats = append(formats, "esp-idf")
+	}
+	if p.AllowUnsignedAtomVMFirmware != nil && *p.AllowUnsignedAtomVMFirmware {
+		formats = append(formats, "atomvm")
+	}
+	if len(formats) == 0 {
+		return "none"
+	}
+	return strings.Join(formats, ",")
 }

@@ -32,7 +32,7 @@ func TestKeyList(t *testing.T) {
 	if gotPath != "/api/orgs/acme/keys" {
 		t.Errorf("path: got %q", gotPath)
 	}
-	for _, want := range []string{"NAME", "PUBLIC KEY", "production", "ntpubkeyAAA", "staging"} {
+	for _, want := range []string{"NAME", "SCHEME", "KEY", "ed25519", "production", "ntpubkeyAAA", "staging"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("table output missing %q, got:\n%s", want, out)
 		}

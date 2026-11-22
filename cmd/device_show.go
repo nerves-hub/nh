@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/nerves-hub/nh/internal/api"
 	"github.com/nerves-hub/nh/internal/config"
@@ -82,8 +83,13 @@ func renderDevice(w io.Writer, device *api.Device) error {
 		fmt.Fprintf(tw, "%s\t%s\n", label, value)
 	}
 	row("Identifier:", device.Identifier)
-	row("Status:", device.ConnectionStatus)
-	if device.Online != "" {
+	if device.Deleted {
+		row("Deleted:", "yes")
+	}
+	row("Status:", connectionStatusText(device.ConnectionStatus))
+	// NervesHub sends the connection status as "online" too; older servers
+	// sent something else there, so show it only when it says more.
+	if device.Online != "" && device.Online != device.ConnectionStatus {
 		row("Online:", device.Online)
 	}
 	row("Version:", orDash(device.Version))
@@ -100,14 +106,38 @@ func renderDevice(w io.Writer, device *api.Device) error {
 	} else {
 		row("Updates enabled:", fmt.Sprintf("%t", device.UpdatesEnabled))
 	}
+	if allowed := device.ManagedUpdatesAllowed; allowed != nil {
+		row("Managed updates allowed:", fmt.Sprintf("%t", *allowed))
+	}
+	// NervesHub keeps updates_blocked_until once it has passed, so only a
+	// time still to come means the device is in the penalty box.
+	if until := device.UpdatesBlockedUntil; until != nil && until.After(time.Now()) {
+		row("Updates blocked until:", formatTimestamp(until))
+	}
 	row("Last communication:", formatTimestamp(device.LastCommunication))
 	if fw := device.FirmwareMetadata; fw != nil && (fw.Version != "" || fw.UUID != "") {
 		row("Firmware:", strings.TrimSpace(fw.Version+" "+bracket(fw.UUID)))
 	}
 	if dg := device.DeploymentGroup; dg != nil && dg.Name != "" {
-		row("Deployment group:", dg.Name)
+		value := dg.Name
+		if dg.FirmwareVersion != "" {
+			value += " (firmware " + dg.FirmwareVersion + ")"
+		}
+		if !dg.IsActive {
+			value += ", inactive"
+		}
+		row("Deployment group:", value)
 	}
 	return tw.Flush()
+}
+
+// connectionStatusText renders a device's connection_status, spelling out
+// "not_seen", which NervesHub sends for a device that has never connected.
+func connectionStatusText(status string) string {
+	if status == "not_seen" {
+		return "never connected"
+	}
+	return orDash(status)
 }
 
 // orDash returns s, or "-" when s is empty.

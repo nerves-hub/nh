@@ -9,8 +9,10 @@ import (
 )
 
 const productsResponse = `{"data":[
-	{"id":1,"name":"thermostat","inserted_at":"2026-01-02T15:04:05","updated_at":"2026-02-01T00:00:00"},
-	{"id":2,"name":"doorbell","inserted_at":"2026-03-04T09:00:00","updated_at":"2026-03-05T00:00:00"}
+	{"name":"thermostat","allowed_update_tools":["fwup","esp-idf","atomvm"],"require_unique_firmware_version":true,
+	 "allow_unsigned_esp_idf_firmware":true,"allow_unsigned_atomvm_firmware":true,"default_managed_updates_allowed":true},
+	{"name":"doorbell","allowed_update_tools":["fwup"],"require_unique_firmware_version":false,
+	 "allow_unsigned_esp_idf_firmware":false,"allow_unsigned_atomvm_firmware":false,"default_managed_updates_allowed":false}
 ]}`
 
 func TestProductListTable(t *testing.T) {
@@ -42,7 +44,11 @@ func TestProductListTable(t *testing.T) {
 	}
 
 	s := out.String()
-	for _, want := range []string{"NAME", "thermostat", "doorbell"} {
+	for _, want := range []string{
+		"NAME", "UPDATE TOOLS", "UNIQUE VERSIONS", "UNSIGNED ALLOWED", "DEVICE-MANAGED UPDATES",
+		"thermostat", "fwup,esp-idf,atomvm", "esp-idf,atomvm",
+		"doorbell", "none",
+	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("table output missing %q, got:\n%s", want, s)
 		}
@@ -65,8 +71,31 @@ func TestProductListJSON(t *testing.T) {
 	if err := rootCmd.Execute(); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if !strings.Contains(out.String(), `"name": "thermostat"`) {
-		t.Errorf("json output expected, got %q", out.String())
+	for _, want := range []string{`"name": "thermostat"`, `"allowed_update_tools": [`, `"default_managed_updates_allowed": true`} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("json output missing %s, got:\n%s", want, out.String())
+		}
+	}
+	if strings.Contains(out.String(), `"inserted_at"`) {
+		t.Errorf("json output has inserted_at, which the server never sends:\n%s", out.String())
+	}
+}
+
+// A server older than product settings sends names alone; the table falls
+// back to the name column rather than a row of dashes.
+func TestProductListWithoutSettings(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"name":"thermostat"}]}`))
+	}))
+	defer srv.Close()
+
+	out, err := execCmd(t, "", "product", "list", "--org", "acme", "--uri", srv.URL, "--token", "tok")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(out, "thermostat") || strings.Contains(out, "UPDATE TOOLS") {
+		t.Errorf("want a name-only table, got:\n%s", out)
 	}
 }
 

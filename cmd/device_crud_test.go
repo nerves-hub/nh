@@ -29,7 +29,9 @@ func TestDeviceCreate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if gotMethod != http.MethodPost || gotPath != "/api/orgs/acme/products/thermostat/devices/dev-001" {
+	// The router has post("/", DeviceController, :create) under
+	// /orgs/:org/products/:product/devices: the identifier goes in the body.
+	if gotMethod != http.MethodPost || gotPath != "/api/orgs/acme/products/thermostat/devices" {
 		t.Errorf("request: %s %s", gotMethod, gotPath)
 	}
 	dev, ok := gotBody["device"].(map[string]any)
@@ -59,7 +61,9 @@ func TestDeviceUpdate(t *testing.T) {
 		gotMethod, gotPath = r.Method, r.URL.Path
 		_ = json.NewDecoder(r.Body).Decode(&gotBody)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":{"identifier":"dev-001","connection_status":"online","update_mode":"off"}}`))
+		// DeviceController.update answers 201, not 200.
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"data":{"identifier":"dev-001","connection_status":"connected","update_mode":"off"}}`))
 	}))
 	defer srv.Close()
 
@@ -243,21 +247,19 @@ func TestDeviceUpdateFailsWhenServerIgnoresDescription(t *testing.T) {
 	}
 }
 
-func TestDeviceUpdateFailsWhenServerIgnoresDeploymentGroup(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{"data":{"identifier":"dev-001","connection_status":"online","deployment_group":null}}`))
-	}))
-	defer srv.Close()
-
-	_, err := execCmd(t, "",
-		"device", "update", "dev-001", "--deployment-group-id", "7",
-		"--org", "acme", "--product", "thermostat",
-		"--uri", srv.URL, "--token", "tok",
-	)
-	if err == nil || !strings.Contains(err.Error(), "didn't apply --deployment-group-id (sent 7, device has no deployment group)") {
-		t.Errorf("want an unapplied --deployment-group-id error, got %v", err)
+// --deployment-group-id was never applied: the device changesets don't cast a
+// deployment group and the API has no other way to set one.
+func TestDeviceDeploymentGroupIDFlagRemoved(t *testing.T) {
+	for _, sub := range []string{"create", "update"} {
+		_, err := execCmd(t, "",
+			"device", sub, "dev-001", "--deployment-group-id", "7",
+			"--org", "acme", "--product", "thermostat",
+			"--token", "tok", "--uri", "https://example.com",
+		)
+		if err == nil || !strings.Contains(err.Error(), "--deployment-group-id was removed") ||
+			!strings.Contains(err.Error(), "--tag") {
+			t.Errorf("%s: want a removed --deployment-group-id error, got %v", sub, err)
+		}
 	}
 }
 
@@ -331,12 +333,126 @@ func TestDeviceUpdateTagsInAnyOrder(t *testing.T) {
 }
 
 func TestDeviceUpdatesEnabledFlagRemoved(t *testing.T) {
-	_, err := execCmd(t, "",
-		"device", "update", "dev-001", "--updates-enabled",
+	for _, flag := range []string{"--updates-enabled", "--updates-enabled=false"} {
+		_, err := execCmd(t, "",
+			"device", "update", "dev-001", flag,
+			"--org", "acme", "--product", "thermostat",
+			"--token", "tok", "--uri", "https://example.com",
+		)
+		if err == nil || !strings.Contains(err.Error(), "--updates-enabled was removed: use --update-mode") {
+			t.Errorf("%s: want a removed --updates-enabled error, got %v", flag, err)
+		}
+	}
+}
+
+// The removed flags are hidden from --help.
+func TestDeviceRemovedFlagsHidden(t *testing.T) {
+	out, err := execCmd(t, "", "device", "update", "--help")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	for _, flag := range []string{"--updates-enabled", "--deployment-group-id"} {
+		if strings.Contains(out, flag+" ") {
+			t.Errorf("%s should be hidden, got:\n%s", flag, out)
+		}
+	}
+	for _, flag := range []string{"--managed-updates-allowed", "--connecting-code"} {
+		if !strings.Contains(out, flag) {
+			t.Errorf("help should list %s, got:\n%s", flag, out)
+		}
+	}
+}
+
+func TestDeviceUpdateManagedUpdatesAndConnectingCode(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"data":{"identifier":"dev-001","connection_status":"connected","managed_updates_allowed":false}}`))
+	}))
+	defer srv.Close()
+
+	out, err := execCmd(t, "",
+		"device", "update", "dev-001", "--managed-updates-allowed=false", "--connecting-code", "IO.puts(:hi)",
 		"--org", "acme", "--product", "thermostat",
-		"--token", "tok", "--uri", "https://example.com",
+		"--uri", srv.URL, "--token", "tok",
 	)
-	if err == nil || !strings.Contains(err.Error(), "unknown flag: --updates-enabled") {
-		t.Errorf("want an unknown flag error, got %v", err)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	dev, _ := gotBody["device"].(map[string]any)
+	// false is sent, not left out.
+	if v, ok := dev["managed_updates_allowed"]; !ok || v != false {
+		t.Errorf("managed_updates_allowed should be false, got %+v", dev)
+	}
+	if dev["connecting_code"] != "IO.puts(:hi)" || len(dev) != 2 {
+		t.Errorf("body: %+v", gotBody)
+	}
+	if !strings.Contains(out, "Managed updates allowed:  false") {
+		t.Errorf("output should show managed updates allowed, got %q", out)
+	}
+}
+
+func TestDeviceUpdateFailsWhenServerIgnoresManagedUpdates(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"data":{"identifier":"dev-001","connection_status":"connected"}}`))
+	}))
+	defer srv.Close()
+
+	_, err := execCmd(t, "",
+		"device", "update", "dev-001", "--managed-updates-allowed",
+		"--org", "acme", "--product", "thermostat",
+		"--uri", srv.URL, "--token", "tok",
+	)
+	if err == nil || !strings.Contains(err.Error(), "didn't apply --managed-updates-allowed (sent true, device has -)") {
+		t.Errorf("want an unapplied --managed-updates-allowed error, got %v", err)
+	}
+}
+
+// --description "" is sent, so that it clears the description.
+func TestDeviceUpdateClearsDescription(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"data":{"identifier":"dev-001","connection_status":"connected","description":null}}`))
+	}))
+	defer srv.Close()
+
+	_, err := execCmd(t, "",
+		"device", "update", "dev-001", "--description", "",
+		"--org", "acme", "--product", "thermostat",
+		"--uri", srv.URL, "--token", "tok",
+	)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	dev, _ := gotBody["device"].(map[string]any)
+	if v, ok := dev["description"]; !ok || v != "" {
+		t.Errorf("an empty description should be sent, got %+v", gotBody)
+	}
+}
+
+// Ecto saves a blank description as nil, which isn't a description the
+// server ignored.
+func TestDeviceUpdateBlankDescriptionCountsAsApplied(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"data":{"identifier":"dev-001","connection_status":"connected","description":null}}`))
+	}))
+	defer srv.Close()
+
+	_, err := execCmd(t, "",
+		"device", "update", "dev-001", "--description", "   ",
+		"--org", "acme", "--product", "thermostat",
+		"--uri", srv.URL, "--token", "tok",
+	)
+	if err != nil {
+		t.Errorf("a blank description saved as none should count as applied, got %v", err)
 	}
 }
