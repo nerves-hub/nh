@@ -284,6 +284,20 @@ no sign-in needed); `--timeout` sets how long to wait
 - `register <identifier>` — register an endpoint id; `--instance`, `--user-email`, `--detail key=value`
 - `show <identifier>`, `delete <identifier>`
 
+**`nh webhook`** — manage an organization's webhooks (the endpoints device events are sent to)
+- `list`, `show <id>` — signing secrets are never listed or shown
+- `create` — `--url` and `--events` (comma-separated or repeated) are required;
+  `--products` limits it to some products (otherwise every product, including
+  ones added later), plus `--description` and `--enabled=false`. Prints the
+  signing secret once: NervesHub won't show it again
+- `update <id>` — sends only the flags given: `--url`, `--description`,
+  `--events`, `--products`, `--all-products`, `--enabled[=false]`
+- `delete <id>` — asks first (`--yes` to skip)
+- `regenerate-secret <id>` — replace the signing secret and print the new one
+  once; the old one stops working at once (asks first, `--yes` to skip)
+- `test <id>` — send a `webhook.test` event and report how the endpoint answered;
+  exits non-zero when it wasn't accepted
+
 **`nh script`** — manage support scripts (ids are the integers `list` shows)
 - `list`, `show <id>`, `create`, `update <id>`, `delete <id>`
 - `create`/`update` take `--name`, `--text` or `--text-file`, `--tags` (comma-separated;
