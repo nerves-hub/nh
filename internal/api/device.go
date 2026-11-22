@@ -205,7 +205,6 @@ func requireDeviceScope(org, product, identifier string) error {
 type DeviceInput struct {
 	Description       string
 	Tags              []string
-	UpdatesEnabled    *bool
 	UpdateMode        string
 	DeploymentGroupID *int
 }
@@ -216,7 +215,6 @@ type deviceBody struct {
 	Identifier        string `json:"identifier,omitempty"`
 	Description       string `json:"description,omitempty"`
 	Tags              string `json:"tags,omitempty"`
-	UpdatesEnabled    *bool  `json:"updates_enabled,omitempty"`
 	UpdateMode        string `json:"update_mode,omitempty"`
 	DeploymentGroupID *int   `json:"deployment_group_id,omitempty"`
 }
@@ -225,7 +223,6 @@ func (in DeviceInput) body(identifier string) deviceBody {
 	b := deviceBody{
 		Identifier:        identifier,
 		Description:       in.Description,
-		UpdatesEnabled:    in.UpdatesEnabled,
 		UpdateMode:        in.UpdateMode,
 		DeploymentGroupID: in.DeploymentGroupID,
 	}
@@ -235,16 +232,26 @@ func (in DeviceInput) body(identifier string) deviceBody {
 	return b
 }
 
+// deviceWriteBody is the request body of a device create or update, with
+// every field under "device". NervesHub v2.5.3 and later read only that
+// object; older servers read update_mode and tags only from the top level and
+// leave them unchanged.
+type deviceWriteBody struct {
+	Device deviceBody `json:"device"`
+}
+
+func (in DeviceInput) writeBody(identifier string) deviceWriteBody {
+	return deviceWriteBody{Device: in.body(identifier)}
+}
+
 // CreateDevice registers a device via
 // POST /orgs/{org}/products/{product}/devices/{identifier}, with the body
-// wrapped in a "device" key.
+// wrapped in a "device" key (see deviceWriteBody).
 func (c *Client) CreateDevice(ctx context.Context, org, product, identifier string, in DeviceInput) (*Device, error) {
 	if err := requireDeviceScope(org, product, identifier); err != nil {
 		return nil, err
 	}
-	body := struct {
-		Device deviceBody `json:"device"`
-	}{Device: in.body(identifier)}
+	body := in.writeBody(identifier)
 
 	var resp struct {
 		Data Device `json:"data"`
@@ -262,14 +269,7 @@ func (c *Client) UpdateDevice(ctx context.Context, org, product, identifier stri
 	if err := requireDeviceScope(org, product, identifier); err != nil {
 		return nil, err
 	}
-	// The fields go both at the top level and under "device": servers before
-	// nerves_hub_web's device_params/1 read update_mode (and tags) only from
-	// the top level, and accept a wrapped one with 201 without applying it.
-	fields := in.body("")
-	body := struct {
-		deviceBody
-		Device deviceBody `json:"device"`
-	}{deviceBody: fields, Device: fields}
+	body := in.writeBody("")
 
 	var resp struct {
 		Data Device `json:"data"`
