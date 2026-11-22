@@ -163,6 +163,13 @@ variable — see [Configuration](#configuration)):
   - `list <identifier>`, `show <identifier> <serial>`, `delete <identifier> <serial>`
   - `generate <identifier>` — generate a device key and CSR or signed certificate locally
   - `upload <identifier> <certificate path>` — upload a certificate for a device
+- `shared-secrets` — manage a device's own shared secrets (`nhd_` keys)
+  - `list <identifier>` — list the device's keys, deactivated ones included
+    (secrets are never listed)
+  - `create <identifier>` — create a key and secret; the secret is shown only
+    once and cannot be fetched again
+  - `delete <identifier> <key>` (alias `deactivate`) — deactivate a key so the
+    device can no longer connect with it (`--yes` skips the prompt)
 
 **`nh firmware`** — manage firmware
 - `list`, `show <uuid>`, `download <uuid>`, `delete <uuid>`
