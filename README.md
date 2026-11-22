@@ -278,6 +278,21 @@ no sign-in needed); `--timeout` sets how long to wait
 **`nh migrate`** — import settings and signing keys from the old Elixir CLI (see
 [Migrating from the Elixir CLI](#migrating-from-the-elixir-cli))
 
+### Errors
+
+When the API refuses a request, `nh` prints the status code and the server's
+message, followed by one line per invalid field. Errors on nested fields are
+shown by path, with list positions in brackets:
+
+```text
+api: 422: Unprocessable Entity
+  conditions.version: is invalid
+  devices[2].identifier: can't be blank
+```
+
+If the response carries a `Retry-After` header, as NervesHub's 503 during
+maintenance does, the wait is shown too: `api: 503: … (retry after 5m)`.
+
 ### Signing key schemes
 
 Every signing key has a `scheme`, and a key only verifies firmware of its own
