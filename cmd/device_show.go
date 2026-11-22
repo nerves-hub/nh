@@ -93,7 +93,13 @@ func renderDevice(w io.Writer, device *api.Device) error {
 	if device.Description != "" {
 		row("Description:", device.Description)
 	}
-	row("Updates enabled:", fmt.Sprintf("%t", device.UpdatesEnabled))
+	// update_mode says more than updates_enabled (which is just update_mode
+	// != off), so show it when the server sends it.
+	if device.UpdateMode != "" {
+		row("Update mode:", device.UpdateMode)
+	} else {
+		row("Updates enabled:", fmt.Sprintf("%t", device.UpdatesEnabled))
+	}
 	row("Last communication:", formatTimestamp(device.LastCommunication))
 	if fw := device.FirmwareMetadata; fw != nil && (fw.Version != "" || fw.UUID != "") {
 		row("Firmware:", strings.TrimSpace(fw.Version+" "+bracket(fw.UUID)))

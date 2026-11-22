@@ -25,27 +25,45 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"slices"
+	"strconv"
+	"strings"
 
 	"github.com/nerves-hub/nh/internal/api"
 	"github.com/nerves-hub/nh/internal/config"
 	"github.com/spf13/cobra"
 )
 
+// updateModeHelp explains --update-mode and the server version the device
+// write flags need, for the create and update help text.
+const updateModeHelp = `--update-mode is off, automatic or device_managed. --tag takes one tag or
+a comma-separated list.
+
+These fields need NervesHub v2.5.3 or later: older servers don't apply them.
+nh reports an error when the device comes back without the update mode, tags
+or description you set, or with no deployment group after
+--deployment-group-id.`
+
 // ── create ──────────────────────────────────────────────────────────────────
 
 var deviceCreateCmd = &cobra.Command{
 	Use:   "create <identifier>",
 	Short: "Create a device",
-	Long:  "Register a device in a product by its identifier.",
-	Args:  deviceIdentifierArgs,
-	RunE:  runDeviceCreate,
+	Long: `Register a device in a product by its identifier. Optional fields:
+--description, --tag (repeatable), --update-mode, --deployment-group-id.
+
+` + updateModeHelp,
+	Args: deviceIdentifierArgs,
+	RunE: runDeviceCreate,
 }
 
 var deviceUpdateCmd = &cobra.Command{
 	Use:   "update <identifier>",
 	Short: "Update a device",
 	Long: `Update a device. Only the fields you pass are changed: --description,
---tag (repeatable), --updates-enabled, --deployment-group-id.`,
+--tag (repeatable), --update-mode, --deployment-group-id.
+
+` + updateModeHelp,
 	Args: deviceIdentifierArgs,
 	RunE: runDeviceUpdate,
 }
@@ -54,15 +72,18 @@ func init() {
 	for _, c := range []*cobra.Command{deviceCreateCmd, deviceUpdateCmd} {
 		c.Flags().String("description", "", "device description")
 		c.Flags().StringArray("tag", nil, "device tag; repeatable")
-		c.Flags().Bool("updates-enabled", false, "whether firmware updates are enabled")
+		c.Flags().String("update-mode", "", "firmware update mode: off, automatic or device_managed")
 		c.Flags().Int("deployment-group-id", 0, "deployment group ID to assign")
 		deviceCmd.AddCommand(c)
 	}
 }
 
+// updateModes are the values NervesHub accepts for a device's update_mode.
+var updateModes = []string{"off", "automatic", "device_managed"}
+
 // deviceInputFromFlags reads the device write flags, returning the input and
 // whether any field was provided.
-func deviceInputFromFlags(cmd *cobra.Command) (api.DeviceInput, bool) {
+func deviceInputFromFlags(cmd *cobra.Command) (api.DeviceInput, bool, error) {
 	var in api.DeviceInput
 	changed := false
 	if cmd.Flags().Changed("description") {
@@ -70,12 +91,19 @@ func deviceInputFromFlags(cmd *cobra.Command) (api.DeviceInput, bool) {
 		changed = true
 	}
 	if cmd.Flags().Changed("tag") {
-		in.Tags, _ = cmd.Flags().GetStringArray("tag")
+		raw, _ := cmd.Flags().GetStringArray("tag")
+		in.Tags = splitTags(raw)
+		if len(in.Tags) == 0 {
+			return in, changed, errors.New("--tag needs a tag name: nh can't clear a device's tags")
+		}
 		changed = true
 	}
-	if cmd.Flags().Changed("updates-enabled") {
-		v, _ := cmd.Flags().GetBool("updates-enabled")
-		in.UpdatesEnabled = &v
+	if cmd.Flags().Changed("update-mode") {
+		mode := mustString(cmd, "update-mode")
+		if !slices.Contains(updateModes, mode) {
+			return in, changed, fmt.Errorf("invalid --update-mode %q: use %s", mode, strings.Join(updateModes, ", "))
+		}
+		in.UpdateMode = mode
 		changed = true
 	}
 	if cmd.Flags().Changed("deployment-group-id") {
@@ -83,7 +111,52 @@ func deviceInputFromFlags(cmd *cobra.Command) (api.DeviceInput, bool) {
 		in.DeploymentGroupID = &v
 		changed = true
 	}
-	return in, changed
+	return in, changed, nil
+}
+
+// checkApplied reports an error when the device a create or update returned
+// doesn't have the fields that were sent. NervesHub before v2.5.3 reads device
+// fields only from the top level of the body, so it answers the nested body nh
+// sends with success but leaves them unchanged. The response names a device's
+// deployment group but not its ID, so --deployment-group-id is only checked
+// for a group being set at all.
+func checkApplied(in api.DeviceInput, device *api.Device) error {
+	const hint = "the server didn't apply %s (sent %s, device has %s): nh needs NervesHub v2.5.3 or later"
+	if in.UpdateMode != "" && device.UpdateMode != in.UpdateMode {
+		return fmt.Errorf(hint, "--update-mode", in.UpdateMode, orDash(device.UpdateMode))
+	}
+	if len(in.Tags) > 0 && !slices.Equal(tagSet(in.Tags), tagSet(device.Tags)) {
+		return fmt.Errorf(hint, "--tag", strings.Join(in.Tags, ","), orDash(strings.Join(device.Tags, ",")))
+	}
+	if in.Description != "" && device.Description != in.Description {
+		return fmt.Errorf(hint, "--description", strconv.Quote(in.Description), strconv.Quote(device.Description))
+	}
+	if in.DeploymentGroupID != nil && device.DeploymentGroup == nil {
+		return fmt.Errorf(hint, "--deployment-group-id", strconv.Itoa(*in.DeploymentGroupID), "no deployment group")
+	}
+	return nil
+}
+
+// splitTags reads --tag values the way NervesHub reads a tags string: each is
+// split on commas and trimmed, and empty entries are dropped.
+func splitTags(values []string) []string {
+	var tags []string
+	for _, v := range values {
+		for _, t := range strings.Split(v, ",") {
+			if t = strings.TrimSpace(t); t != "" {
+				tags = append(tags, t)
+			}
+		}
+	}
+	return tags
+}
+
+// tagSet returns tags sorted and without duplicates, so two lists that hold
+// the same tags compare equal.
+func tagSet(tags []string) []string {
+	out := splitTags(tags)
+	slices.Sort(out)
+	return slices.Compact(out)
 }
 
 func runDeviceCreate(cmd *cobra.Command, args []string) error {
@@ -95,7 +168,10 @@ func runDeviceCreate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	in, _ := deviceInputFromFlags(cmd)
+	in, _, err := deviceInputFromFlags(cmd)
+	if err != nil {
+		return err
+	}
 
 	client, err := newAuthedClient(cfg)
 	if err != nil {
@@ -107,12 +183,15 @@ func runDeviceCreate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	w := cmd.OutOrStdout()
-	if cfg.Output == config.OutputJSON {
-		return printJSON(w, device)
+	// The device exists even when a field wasn't applied, so show it before
+	// reporting that.
+	if err := showWrittenDevice(cmd, cfg, device, fmt.Sprintf("Created device %s in %s/%s", device.Identifier, org, product)); err != nil {
+		return err
 	}
-	fmt.Fprintf(w, "Created device %s in %s/%s\n", device.Identifier, org, product)
-	return renderDevice(w, device)
+	if err := checkApplied(in, device); err != nil {
+		return fmt.Errorf("created device %s, but %w", identifier, err)
+	}
+	return nil
 }
 
 func runDeviceUpdate(cmd *cobra.Command, args []string) error {
@@ -124,9 +203,12 @@ func runDeviceUpdate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	in, changed := deviceInputFromFlags(cmd)
+	in, changed, err := deviceInputFromFlags(cmd)
+	if err != nil {
+		return err
+	}
 	if !changed {
-		return errors.New("nothing to update: provide --description, --tag, --updates-enabled, or --deployment-group-id")
+		return errors.New("nothing to update: provide --description, --tag, --update-mode, or --deployment-group-id")
 	}
 
 	client, err := newAuthedClient(cfg)
@@ -139,11 +221,23 @@ func runDeviceUpdate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	if err := showWrittenDevice(cmd, cfg, device, "Updated device "+device.Identifier); err != nil {
+		return err
+	}
+	if err := checkApplied(in, device); err != nil {
+		return fmt.Errorf("updated device %s, but %w", identifier, err)
+	}
+	return nil
+}
+
+// showWrittenDevice prints the device a create or update returned: as JSON,
+// or as a headline followed by its details.
+func showWrittenDevice(cmd *cobra.Command, cfg *config.Config, device *api.Device, headline string) error {
 	w := cmd.OutOrStdout()
 	if cfg.Output == config.OutputJSON {
 		return printJSON(w, device)
 	}
-	fmt.Fprintf(w, "Updated device %s\n", device.Identifier)
+	fmt.Fprintln(w, headline)
 	return renderDevice(w, device)
 }
 

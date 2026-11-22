@@ -16,13 +16,13 @@ func TestDeviceCreate(t *testing.T) {
 		_ = json.NewDecoder(r.Body).Decode(&gotBody)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{"data":{"identifier":"dev-001","connection_status":"offline","tags":["prod","eu"]}}`))
+		_, _ = w.Write([]byte(`{"data":{"identifier":"dev-001","connection_status":"offline","description":"edge unit","tags":["prod","eu"],"update_mode":"automatic"}}`))
 	}))
 	defer srv.Close()
 
 	out, err := execCmd(t, "",
 		"device", "create", "dev-001",
-		"--description", "edge unit", "--tag", "prod", "--tag", "eu", "--updates-enabled",
+		"--description", "edge unit", "--tag", "prod", "--tag", "eu", "--update-mode", "automatic",
 		"--org", "acme", "--product", "thermostat",
 		"--uri", srv.URL, "--token", "tok",
 	)
@@ -40,8 +40,12 @@ func TestDeviceCreate(t *testing.T) {
 	if dev["identifier"] != "dev-001" || dev["description"] != "edge unit" || dev["tags"] != "prod,eu" {
 		t.Errorf("device body: %+v", dev)
 	}
-	if dev["updates_enabled"] != true {
-		t.Errorf("updates_enabled should be true, got %v", dev["updates_enabled"])
+	if dev["update_mode"] != "automatic" {
+		t.Errorf("update_mode should be automatic, got %v", dev["update_mode"])
+	}
+	// Every field is nested under "device"; nothing is sent at the top level.
+	if len(gotBody) != 1 {
+		t.Errorf("body should only hold device, got %+v", gotBody)
 	}
 	if !strings.Contains(out, "Created device dev-001 in acme/thermostat") {
 		t.Errorf("output: %q", out)
@@ -55,12 +59,12 @@ func TestDeviceUpdate(t *testing.T) {
 		gotMethod, gotPath = r.Method, r.URL.Path
 		_ = json.NewDecoder(r.Body).Decode(&gotBody)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":{"identifier":"dev-001","connection_status":"online"}}`))
+		_, _ = w.Write([]byte(`{"data":{"identifier":"dev-001","connection_status":"online","update_mode":"off"}}`))
 	}))
 	defer srv.Close()
 
 	out, err := execCmd(t, "",
-		"device", "update", "dev-001", "--updates-enabled=false",
+		"device", "update", "dev-001", "--update-mode", "off",
 		"--org", "acme", "--product", "thermostat",
 		"--uri", srv.URL, "--token", "tok",
 	)
@@ -74,9 +78,12 @@ func TestDeviceUpdate(t *testing.T) {
 	if !ok {
 		t.Fatalf("body should be wrapped in device, got %+v", gotBody)
 	}
-	// Only the changed field is sent; updates_enabled can be set to false.
-	if dev["updates_enabled"] != false {
-		t.Errorf("updates_enabled should be false, got %v", dev["updates_enabled"])
+	// Only the changed field is sent.
+	if len(dev) != 1 || dev["update_mode"] != "off" {
+		t.Errorf("update body should only hold update_mode off, got %+v", dev)
+	}
+	if len(gotBody) != 1 {
+		t.Errorf("body should only hold device, got %+v", gotBody)
 	}
 	if _, present := dev["identifier"]; present {
 		t.Errorf("identifier should not be in an update body, got %+v", dev)
@@ -129,5 +136,207 @@ func TestDeviceDeleteAbortsWithoutConfirmation(t *testing.T) {
 	)
 	if err == nil || !strings.Contains(err.Error(), "without confirmation") {
 		t.Errorf("expected confirmation guard, got %v", err)
+	}
+}
+
+func TestDeviceUpdateMode(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"identifier":"dev-001","connection_status":"online","update_mode":"device_managed"}}`))
+	}))
+	defer srv.Close()
+
+	_, err := execCmd(t, "",
+		"device", "update", "dev-001", "--update-mode", "device_managed",
+		"--org", "acme", "--product", "thermostat",
+		"--uri", srv.URL, "--token", "tok",
+	)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	dev, ok := gotBody["device"].(map[string]any)
+	if !ok {
+		t.Fatalf("body should be wrapped in device, got %+v", gotBody)
+	}
+	if dev["update_mode"] != "device_managed" {
+		t.Errorf("update_mode should be device_managed, got %v", dev["update_mode"])
+	}
+	if _, present := gotBody["update_mode"]; present {
+		t.Errorf("update_mode should only be sent under device, got %+v", gotBody)
+	}
+}
+
+func TestDeviceUpdateModeInvalid(t *testing.T) {
+	_, err := execCmd(t, "",
+		"device", "update", "dev-001", "--update-mode", "sometimes",
+		"--org", "acme", "--product", "thermostat",
+		"--token", "tok", "--uri", "https://example.com",
+	)
+	if err == nil || !strings.Contains(err.Error(), "invalid --update-mode") {
+		t.Errorf("want an invalid --update-mode error, got %v", err)
+	}
+}
+
+// An older NervesHub answers the nested body with success but leaves tags and
+// update_mode unchanged; nh reports that instead of claiming success.
+func TestDeviceCreateFailsWhenServerIgnoresTags(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"data":{"identifier":"dev-001","connection_status":"offline","tags":[]}}`))
+	}))
+	defer srv.Close()
+
+	_, err := execCmd(t, "",
+		"device", "create", "dev-001", "--tag", "prod",
+		"--org", "acme", "--product", "thermostat",
+		"--uri", srv.URL, "--token", "tok",
+	)
+	if err == nil || !strings.Contains(err.Error(), "created device dev-001, but the server didn't apply --tag") ||
+		!strings.Contains(err.Error(), "v2.5.3") {
+		t.Errorf("want an unapplied --tag error, got %v", err)
+	}
+}
+
+// The device exists even when a field wasn't applied, so it is still printed.
+func TestDeviceCreatePrintsDeviceWhenAFieldIsNotApplied(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"data":{"identifier":"dev-001","connection_status":"offline","tags":[]}}`))
+	}))
+	defer srv.Close()
+
+	out, err := execCmd(t, "",
+		"device", "create", "dev-001", "--tag", "prod", "-o", "json",
+		"--org", "acme", "--product", "thermostat",
+		"--uri", srv.URL, "--token", "tok",
+	)
+	if err == nil {
+		t.Fatal("want an unapplied --tag error")
+	}
+	if !strings.Contains(out, `"identifier": "dev-001"`) {
+		t.Errorf("the created device should be printed as JSON, got %q", out)
+	}
+}
+
+func TestDeviceUpdateFailsWhenServerIgnoresDescription(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"data":{"identifier":"dev-001","connection_status":"online","description":"old"}}`))
+	}))
+	defer srv.Close()
+
+	out, err := execCmd(t, "",
+		"device", "update", "dev-001", "--description", "edge unit",
+		"--org", "acme", "--product", "thermostat",
+		"--uri", srv.URL, "--token", "tok",
+	)
+	if err == nil || !strings.Contains(err.Error(), `didn't apply --description (sent "edge unit", device has "old")`) {
+		t.Errorf("want an unapplied --description error, got %v", err)
+	}
+	if !strings.Contains(out, "Updated device dev-001") {
+		t.Errorf("the device should still be printed, got %q", out)
+	}
+}
+
+func TestDeviceUpdateFailsWhenServerIgnoresDeploymentGroup(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"data":{"identifier":"dev-001","connection_status":"online","deployment_group":null}}`))
+	}))
+	defer srv.Close()
+
+	_, err := execCmd(t, "",
+		"device", "update", "dev-001", "--deployment-group-id", "7",
+		"--org", "acme", "--product", "thermostat",
+		"--uri", srv.URL, "--token", "tok",
+	)
+	if err == nil || !strings.Contains(err.Error(), "didn't apply --deployment-group-id (sent 7, device has no deployment group)") {
+		t.Errorf("want an unapplied --deployment-group-id error, got %v", err)
+	}
+}
+
+// NervesHub splits a tags string on commas, so --tag a,b sets two tags.
+func TestDeviceUpdateTagWithComma(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"identifier":"dev-001","connection_status":"online","tags":["prod","eu"]}}`))
+	}))
+	defer srv.Close()
+
+	_, err := execCmd(t, "",
+		"device", "update", "dev-001", "--tag", "prod, eu",
+		"--org", "acme", "--product", "thermostat",
+		"--uri", srv.URL, "--token", "tok",
+	)
+	if err != nil {
+		t.Fatalf("a comma-separated --tag should count as applied, got %v", err)
+	}
+	if dev, _ := gotBody["device"].(map[string]any); dev["tags"] != "prod,eu" {
+		t.Errorf("tags should be sent as prod,eu, got %+v", gotBody)
+	}
+}
+
+func TestDeviceUpdateEmptyTag(t *testing.T) {
+	_, err := execCmd(t, "",
+		"device", "update", "dev-001", "--tag", " , ",
+		"--org", "acme", "--product", "thermostat",
+		"--token", "tok", "--uri", "https://example.com",
+	)
+	if err == nil || !strings.Contains(err.Error(), "--tag needs a tag name") {
+		t.Errorf("want a --tag needs a tag name error, got %v", err)
+	}
+}
+
+func TestDeviceUpdateFailsWhenServerIgnoresUpdateMode(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"data":{"identifier":"dev-001","connection_status":"online","update_mode":"automatic"}}`))
+	}))
+	defer srv.Close()
+
+	_, err := execCmd(t, "",
+		"device", "update", "dev-001", "--update-mode", "off",
+		"--org", "acme", "--product", "thermostat",
+		"--uri", srv.URL, "--token", "tok",
+	)
+	if err == nil || !strings.Contains(err.Error(), "didn't apply --update-mode (sent off, device has automatic)") {
+		t.Errorf("want an unapplied --update-mode error, got %v", err)
+	}
+}
+
+func TestDeviceUpdateTagsInAnyOrder(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"identifier":"dev-001","connection_status":"online","tags":["eu","prod"]}}`))
+	}))
+	defer srv.Close()
+
+	_, err := execCmd(t, "",
+		"device", "update", "dev-001", "--tag", "prod", "--tag", "eu",
+		"--org", "acme", "--product", "thermostat",
+		"--uri", srv.URL, "--token", "tok",
+	)
+	if err != nil {
+		t.Errorf("tags returned in another order should count as applied, got %v", err)
+	}
+}
+
+func TestDeviceUpdatesEnabledFlagRemoved(t *testing.T) {
+	_, err := execCmd(t, "",
+		"device", "update", "dev-001", "--updates-enabled",
+		"--org", "acme", "--product", "thermostat",
+		"--token", "tok", "--uri", "https://example.com",
+	)
+	if err == nil || !strings.Contains(err.Error(), "unknown flag: --updates-enabled") {
+		t.Errorf("want an unknown flag error, got %v", err)
 	}
 }
