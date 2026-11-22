@@ -208,9 +208,9 @@ variable — see [Configuration](#configuration)):
   | `rauc` | `.raucb` | the manifest's `[update]` and `[meta.nerveshub]` | nothing: bundles are signed when built and uploaded as is |
 
   A product takes only the formats in its `allowed_update_tools` (`fwup` by
-  default), and may accept unsigned ESP-IDF or AtomVM images with
-  `allow_unsigned_esp_idf_firmware` / `allow_unsigned_atomvm_firmware`; both are
-  set with `nh product update`. `list` and `show` report each firmware's format
+  default; `nh product update <product> --allow-tool <format>`), and may accept
+  unsigned ESP-IDF or AtomVM images (`--allow-unsigned-esp-idf` /
+  `--allow-unsigned-atomvm`). `list` and `show` report each firmware's format
   (`tool`), and `show` its size
 
 **`nh deployment`** — manage deployment groups

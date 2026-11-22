@@ -347,7 +347,7 @@ func TestFirmwareUploadESPIDFErrors(t *testing.T) {
 		_, err := execCmd(t, "", "firmware", "upload", espUnsigned,
 			"--org", "acme", "--product", "my_app", "--uri", "https://example.com", "--token", "tok")
 		if err == nil || !strings.Contains(err.Error(), "RSA-3072") || !strings.Contains(err.Error(), "--skip-signing") ||
-			!strings.Contains(err.Error(), "allow_unsigned_esp_idf_firmware") {
+			!strings.Contains(err.Error(), "--allow-unsigned-esp-idf") {
 			t.Errorf("want guidance on ESP-IDF keys, got %v", err)
 		}
 	})
@@ -515,21 +515,21 @@ func TestFirmwareUploadServerRefusalsCarryHints(t *testing.T) {
 			detail:  `The product \"my_app\" does not accept esp-idf firmware. An organization owner can enable it in the product's settings.`,
 			path:    espSigned,
 			product: "my_app",
-			want:    []string{"does not accept esp-idf firmware", `add "esp-idf" to the allowed_update_tools`, "nh product update"},
+			want:    []string{"does not accept esp-idf firmware", "nh product update my_app --allow-tool esp-idf"},
 		},
 		{
 			name:    "unsigned esp-idf",
 			detail:  "This ESP-IDF image is not signed. Sign it with `espsecure.py sign_data --version 2` and register the matching public key against your organization, or allow unsigned images in this product's settings.",
 			path:    espUnsigned,
 			product: "my_app",
-			want:    []string{"This ESP-IDF image is not signed", "allow_unsigned_esp_idf_firmware"},
+			want:    []string{"This ESP-IDF image is not signed", "nh product update my_app --allow-unsigned-esp-idf"},
 		},
 		{
 			name:    "unsigned atomvm",
 			detail:  "This ESP-IDF image is not signed. Sign it with `espsecure.py sign_data --version 2` and register the matching public key against your organization, or allow unsigned images in this product's settings.",
 			path:    "", // a packbeam, built below
 			product: "kiosk",
-			want:    []string{"is not signed", "allow_unsigned_atomvm_firmware"},
+			want:    []string{"is not signed", "nh product update kiosk --allow-unsigned-atomvm"},
 		},
 	}
 	for _, c := range cases {

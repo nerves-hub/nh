@@ -73,7 +73,7 @@ its name. NervesHub accepts:
   rauc     .raucb  RAUC bundles (verity format)
 
 A product accepts only the formats in its allowed_update_tools (fwup by
-default), set in the product's settings or with ` + "`nh product update`" + `.
+default); ` + "`nh product update <product> --allow-tool <format>`" + ` changes that.
 
 Before uploading, nh reads the image's own metadata, shows it, and refuses an
 image built for a different product.
@@ -95,9 +95,9 @@ Firmware is signed before uploading unless --skip-signing is passed:
   rauc     Bundles are signed when they are built, so they are uploaded as is
            and the signing flags do not apply.
 
-A product can accept unsigned ESP-IDF or AtomVM images through its
-allow_unsigned_esp_idf_firmware / allow_unsigned_atomvm_firmware settings; fwup
-archives are always verified.
+A product can accept unsigned ESP-IDF or AtomVM images (` + "`nh product update`" + `
+--allow-unsigned-esp-idf / --allow-unsigned-atomvm); fwup archives are always
+verified.
 
 --deploy names a deployment group to point at the new firmware once the upload
 succeeds. It may be repeated to update several. When it is not given, the
@@ -381,7 +381,7 @@ func resolveESPIDFKey(cfg *config.Config, org string, flags signingFlags) (path,
 		if err := validKeyName(flags.keyName); err != nil {
 			return "", "", err
 		}
-		p := filepath.Join(cfg.DataDir, "keys", org, flags.keyName+".rsa.pem")
+		p := pki.RSAPrivateKeyPath(cfg.DataDir, org, flags.keyName)
 		if _, err := os.Stat(p); err != nil {
 			if os.IsNotExist(err) {
 				return "", "", fmt.Errorf("ESP-IDF signing key %q not found at %s; pass --key-file <pem> "+
@@ -393,7 +393,7 @@ func resolveESPIDFKey(cfg *config.Config, org string, flags signingFlags) (path,
 	}
 	return "", "", errors.New("ESP-IDF images are signed with an RSA-3072 Secure Boot v2 key: pass --key <name> " +
 		"or --key-file <pem>, or --skip-signing to upload the image unsigned " +
-		"(the product must allow it: allow_unsigned_esp_idf_firmware in the product's settings, or `nh product update`)")
+		"(the product must accept that: `nh product update <product> --allow-unsigned-esp-idf`)")
 }
 
 // uploadErrorHint adds what to do next to the server's reasons for refusing
@@ -407,18 +407,17 @@ func uploadErrorHint(err error, format firmware.Format, product string) error {
 	var hint string
 	switch {
 	case strings.Contains(msg, "does not accept"):
-		hint = fmt.Sprintf("an org owner can add %q to the allowed_update_tools of product %s, "+
-			"in the product's settings or with `nh product update`", format, product)
+		hint = fmt.Sprintf("an org owner can accept %s firmware with `nh product update %s --allow-tool %s`",
+			format, product, format)
 	case strings.Contains(msg, "not signed") && format == firmware.AtomVM:
 		// The server words this one for ESP-IDF whatever the format.
-		hint = "this packbeam is unsigned: upload it without --skip-signing to sign it with --key, " +
-			"or allow unsigned AtomVM firmware (allow_unsigned_atomvm_firmware) in the product's settings " +
-			"or with `nh product update`"
+		hint = fmt.Sprintf("this packbeam is unsigned: upload it without --skip-signing to sign it with --key, "+
+			"or accept unsigned AtomVM firmware with `nh product update %s --allow-unsigned-atomvm`", product)
 	case strings.Contains(msg, "not signed"):
-		hint = "sign the image with --key or --key-file, or allow unsigned ESP-IDF firmware " +
-			"(allow_unsigned_esp_idf_firmware) in the product's settings or with `nh product update`"
+		hint = fmt.Sprintf("sign the image with --key or --key-file, or accept unsigned ESP-IDF firmware "+
+			"with `nh product update %s --allow-unsigned-esp-idf`", product)
 	case strings.Contains(msg, "no signing keys"):
-		hint = "register the public half of your signing key with the organization first (see `nh key --help`)"
+		hint = "register a signing key with the organization first (see `nh key create --help`)"
 	case strings.Contains(msg, "does not match any of this organization's signing keys"):
 		hint = "check the key you signed with is registered to the organization (see `nh key list`)"
 	}
