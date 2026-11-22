@@ -30,12 +30,40 @@ import (
 )
 
 // CACertificate is an organization CA certificate, as returned by the
-// /orgs/{org}/ca_certificates endpoints.
+// /orgs/{org}/ca_certificates endpoints (NervesHubWeb.API.CACertificateJSON).
+// The server sends no inserted_at or updated_at, although its OpenAPI schema
+// lists them.
 type CACertificate struct {
 	Serial      string    `json:"serial"`
 	Description string    `json:"description"`
 	NotBefore   Timestamp `json:"not_before"`
 	NotAfter    Timestamp `json:"not_after"`
+	// JITP is the CA's just-in-time provisioning profile, or nil when the CA
+	// has none.
+	JITP *CACertificateJITP `json:"jitp"`
+}
+
+// CACertificateJITP is a CA certificate's just-in-time provisioning (JITP)
+// profile. A device that connects with a certificate signed by the CA, and that
+// NervesHub doesn't know yet, is created in ProductName with these tags and
+// this description.
+type CACertificateJITP struct {
+	ProductName string   `json:"product_name"`
+	Tags        []string `json:"tags"`
+	Description string   `json:"description"`
+}
+
+// CACertificateInput is what CreateCACertificate registers. Cert and
+// VerificationCert are PEM; the verification certificate proves ownership of
+// the CA's private key.
+type CACertificateInput struct {
+	Cert             []byte
+	VerificationCert []byte
+	Description      string
+	// JITP, when set, gives the CA a just-in-time provisioning profile. The
+	// server needs its ProductName: naming the product (rather than giving its
+	// id) needs NervesHub v2.5.0 or later.
+	JITP *CACertificateJITP
 }
 
 // CACertificateVerificationToken fetches a token used to prove ownership of a
@@ -57,29 +85,45 @@ func (c *Client) CACertificateVerificationToken(ctx context.Context, org string)
 	return resp.Data.Token, nil
 }
 
-// CreateCACertificate registers a PEM CA certificate with an organization via
+// CreateCACertificate registers a CA certificate with an organization via
 // POST /orgs/{org}/ca_certificates with body {"cert": <base64>, "description":
-// ..., "verification_cert": <base64>} and returns the stored certificate. The
-// verification certificate proves ownership of the CA's private key.
-func (c *Client) CreateCACertificate(ctx context.Context, org string, certPEM []byte, description string, verificationCertPEM []byte) (*CACertificate, error) {
+// ..., "verification_cert": <base64>, "jitp": {...}} and returns the stored
+// certificate.
+func (c *Client) CreateCACertificate(ctx context.Context, org string, in CACertificateInput) (*CACertificate, error) {
 	if org == "" {
 		return nil, errors.New("api: org is required to register a CA certificate")
 	}
-	if len(certPEM) == 0 {
+	if len(in.Cert) == 0 {
 		return nil, errors.New("api: certificate is required")
 	}
-	if len(verificationCertPEM) == 0 {
+	if len(in.VerificationCert) == 0 {
 		return nil, errors.New("api: verification certificate is required")
 	}
+	if in.JITP != nil && in.JITP.ProductName == "" {
+		return nil, errors.New("api: a JITP profile needs a product")
+	}
 
+	type jitpBody struct {
+		ProductName string   `json:"product_name"`
+		Tags        []string `json:"tags,omitempty"`
+		Description string   `json:"description,omitempty"`
+	}
 	body := struct {
-		Cert             string `json:"cert"`
-		Description      string `json:"description,omitempty"`
-		VerificationCert string `json:"verification_cert"`
+		Cert             string    `json:"cert"`
+		Description      string    `json:"description,omitempty"`
+		VerificationCert string    `json:"verification_cert"`
+		JITP             *jitpBody `json:"jitp,omitempty"`
 	}{
-		Cert:             base64.StdEncoding.EncodeToString(certPEM),
-		Description:      description,
-		VerificationCert: base64.StdEncoding.EncodeToString(verificationCertPEM),
+		Cert:             base64.StdEncoding.EncodeToString(in.Cert),
+		Description:      in.Description,
+		VerificationCert: base64.StdEncoding.EncodeToString(in.VerificationCert),
+	}
+	if in.JITP != nil {
+		body.JITP = &jitpBody{
+			ProductName: in.JITP.ProductName,
+			Tags:        in.JITP.Tags,
+			Description: in.JITP.Description,
+		}
 	}
 
 	var resp struct {
