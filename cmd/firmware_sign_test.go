@@ -14,7 +14,8 @@ import (
 )
 
 // stubFwup replaces fwup with a script that records its arguments (one per
-// line) and writes the input file plus a "SIGNED" marker to the output file.
+// line), then the contents of the -s key file, and writes the input file plus
+// a "SIGNED" marker to the output file.
 func stubFwup(t *testing.T) (argsFile string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -27,9 +28,11 @@ func stubFwup(t *testing.T) (argsFile string) {
 		"  case \"$1\" in\n" +
 		"    -i) in=\"$2\"; shift 2 ;;\n" +
 		"    -o) out=\"$2\"; shift 2 ;;\n" +
+		"    -s) key=\"$2\"; shift 2 ;;\n" +
 		"    *) shift ;;\n" +
 		"  esac\n" +
 		"done\n" +
+		`[ -n "$key" ] && cat "$key" >> "` + argsFile + `"` + "\n" +
 		`cat "$in" > "$out"` + "\n" +
 		`printf 'SIGNED' >> "$out"` + "\n"
 
@@ -111,13 +114,25 @@ func TestFirmwareUploadSigned(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fwup was not invoked: %v", err)
 	}
+	// The last line is the key file's contents, which the stub appends.
 	args := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
-	if len(args) != 7 || args[0] != "--sign" || args[1] != "-i" || args[2] != fwPath ||
-		args[3] != "-o" || args[5] != "--private-key" {
+	if len(args) != 8 || args[0] != "--sign" || args[1] != "-i" || args[2] != fwPath ||
+		args[3] != "-o" || args[5] != "-s" {
 		t.Errorf("fwup args: %v", args)
 	}
-	if args[6] != pki.PrivateKeyString(priv) {
+	if len(args) == 8 && args[7] != pki.PrivateKeyString(priv) {
 		t.Errorf("fwup received the wrong private key")
+	}
+	// The key travels in a file, never on the command line.
+	for _, a := range args[:min(len(args), 7)] {
+		if a == pki.PrivateKeyString(priv) {
+			t.Error("the private key must not appear in fwup's arguments")
+		}
+	}
+	if len(args) == 8 {
+		if _, err := os.Stat(args[6]); !os.IsNotExist(err) {
+			t.Errorf("temporary key file %s should be removed, got %v", args[6], err)
+		}
 	}
 
 	// The signed image was uploaded, under the original filename.
