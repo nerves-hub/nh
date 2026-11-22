@@ -83,6 +83,27 @@ func TestFirmwareDownloadDefaultName(t *testing.T) {
 	}
 }
 
+// The default name follows the image's format, detected from its bytes, so
+// an AtomVM packbeam is not saved as a .fw.
+func TestFirmwareDownloadDefaultNameFollowsFormat(t *testing.T) {
+	for magic, want := range map[string]string{
+		"#!/usr/bin/env AtomVM\n\x00\x00": "uuid-1.avm",
+		"hsqs":                            "uuid-1.raucb",
+		"PK\x03\x04":                      "uuid-1.fw",
+	} {
+		srv, _ := firmwareServer(t, magic+"rest", http.StatusOK)
+		t.Chdir(t.TempDir())
+		if _, err := execCmd(t, "", "firmware", "download", "uuid-1",
+			"--org", "acme", "--product", "thermostat", "--uri", srv.URL, "--token", "tok"); err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		if _, err := os.Stat(want); err != nil {
+			entries, _ := os.ReadDir(".")
+			t.Errorf("want %s, got %v", want, entries)
+		}
+	}
+}
+
 func TestFirmwareDownloadStdout(t *testing.T) {
 	srv, _ := firmwareServer(t, "FWDATA", http.StatusOK)
 

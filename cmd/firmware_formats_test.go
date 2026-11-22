@@ -335,7 +335,7 @@ func TestFirmwareUploadESPIDFAlreadySigned(t *testing.T) {
 	if string(*gotContent) != string(want) {
 		t.Error("an already-signed image should be uploaded as is")
 	}
-	if !strings.Contains(out, "already carries a Secure Boot v2 signature") {
+	if !strings.Contains(out, "already carries a Secure Boot v2 signature, so it is not signed again with key secure-boot") {
 		t.Errorf("output should say why it was not signed:\n%s", out)
 	}
 }
@@ -347,7 +347,7 @@ func TestFirmwareUploadESPIDFErrors(t *testing.T) {
 		_, err := execCmd(t, "", "firmware", "upload", espUnsigned,
 			"--org", "acme", "--product", "my_app", "--uri", "https://example.com", "--token", "tok")
 		if err == nil || !strings.Contains(err.Error(), "RSA-3072") || !strings.Contains(err.Error(), "--skip-signing") ||
-			!strings.Contains(err.Error(), "allow_unsigned_esp_idf_firmware") {
+			!strings.Contains(err.Error(), "--allow-unsigned-esp-idf") {
 			t.Errorf("want guidance on ESP-IDF keys, got %v", err)
 		}
 	})
@@ -432,11 +432,54 @@ func TestFirmwareUploadUnknownFormat(t *testing.T) {
 	if err := os.WriteFile(path, []byte("not firmware"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, err := execCmd(t, "", "firmware", "upload", path, "--skip-signing",
+	_, err := execCmd(t, "", "firmware", "upload", path,
 		"--org", "acme", "--product", "thermostat", "--uri", "https://example.com", "--token", "tok")
 	if err == nil || !strings.Contains(err.Error(), "unrecognised firmware format") ||
 		!strings.Contains(err.Error(), "atomvm (.avm)") {
 		t.Errorf("want the supported formats listed, got %v", err)
+	}
+}
+
+// With --skip-signing nh has nothing to do to the file, so a format it does
+// not know goes to the server, which may accept formats added after this nh.
+func TestFirmwareUploadUnknownFormatSkipSigning(t *testing.T) {
+	srv, _, gotContent := formatUploadServer(t, "thermostat")
+	path := filepath.Join(t.TempDir(), "new.img")
+	if err := os.WriteFile(path, []byte("a future format"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := execCmd(t, "", "firmware", "upload", path, "--skip-signing",
+		"--org", "acme", "--product", "thermostat", "--uri", srv.URL, "--token", "tok")
+	if err != nil {
+		t.Fatalf("Execute: %v\n%s", err, out)
+	}
+	if string(*gotContent) != "a future format" {
+		t.Errorf("uploaded %q", *gotContent)
+	}
+	if !strings.Contains(out, "Warning:") || !strings.Contains(out, "for the server to judge") {
+		t.Errorf("should warn that the format is unknown:\n%s", out)
+	}
+}
+
+func TestFirmwareUploadKeyFileRefusesPublicKey(t *testing.T) {
+	pub, _, _ := ed25519.GenerateKey(nil)
+	keyFile := filepath.Join(t.TempDir(), "fwup-key.pub")
+	if err := os.WriteFile(keyFile, []byte(pki.PublicKeyString(pub)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := execCmd(t, "", "firmware", "upload", testPackbeam(t, "kiosk", "1.0.0"), "--key-file", keyFile,
+		"--org", "acme", "--product", "kiosk", "--uri", "https://example.com", "--token", "tok")
+	if err == nil || !strings.Contains(err.Error(), "public key") || !strings.Contains(err.Error(), "fwup-key.priv") {
+		t.Errorf("want a public-key refusal, got %v", err)
+	}
+}
+
+func TestFirmwareUploadESPIDFAlreadySignedChecksTheKey(t *testing.T) {
+	stubEspsecure(t)
+	_, err := execCmd(t, "", "firmware", "upload", espSigned, "--key-file", filepath.Join(t.TempDir(), "missing.pem"),
+		"--org", "acme", "--product", "my_app", "--uri", "https://example.com", "--token", "tok")
+	if err == nil || !strings.Contains(err.Error(), "signing key file") {
+		t.Errorf("a key that was asked for should still be checked, got %v", err)
 	}
 }
 
@@ -452,6 +495,16 @@ func TestFirmwareUploadKeyAndKeyFileConflict(t *testing.T) {
 // The server explains a refused upload in errors.detail
 // (NervesHubWeb.API.FallbackController); that text must reach the user, with
 // what to do about it.
+// An image already signed, uploaded with no key at all, goes as is.
+func TestFirmwareUploadESPIDFAlreadySignedNoKey(t *testing.T) {
+	srv, _, _ := formatUploadServer(t, "my_app")
+	out, err := execCmd(t, "", "firmware", "upload", espSigned,
+		"--org", "acme", "--product", "my_app", "--uri", srv.URL, "--token", "tok")
+	if err != nil || !strings.Contains(out, "uploading it as is") {
+		t.Errorf("Execute: %v\n%s", err, out)
+	}
+}
+
 func TestFirmwareUploadServerRefusalsCarryHints(t *testing.T) {
 	cases := []struct {
 		name, detail, path, product string
@@ -462,21 +515,21 @@ func TestFirmwareUploadServerRefusalsCarryHints(t *testing.T) {
 			detail:  `The product \"my_app\" does not accept esp-idf firmware. An organization owner can enable it in the product's settings.`,
 			path:    espSigned,
 			product: "my_app",
-			want:    []string{"does not accept esp-idf firmware", `add "esp-idf" to the allowed_update_tools`, "nh product update"},
+			want:    []string{"does not accept esp-idf firmware", "nh product update my_app --allow-tool esp-idf"},
 		},
 		{
 			name:    "unsigned esp-idf",
 			detail:  "This ESP-IDF image is not signed. Sign it with `espsecure.py sign_data --version 2` and register the matching public key against your organization, or allow unsigned images in this product's settings.",
 			path:    espUnsigned,
 			product: "my_app",
-			want:    []string{"This ESP-IDF image is not signed", "allow_unsigned_esp_idf_firmware"},
+			want:    []string{"This ESP-IDF image is not signed", "nh product update my_app --allow-unsigned-esp-idf"},
 		},
 		{
 			name:    "unsigned atomvm",
 			detail:  "This ESP-IDF image is not signed. Sign it with `espsecure.py sign_data --version 2` and register the matching public key against your organization, or allow unsigned images in this product's settings.",
 			path:    "", // a packbeam, built below
 			product: "kiosk",
-			want:    []string{"is not signed", "allow_unsigned_atomvm_firmware"},
+			want:    []string{"is not signed", "nh product update kiosk --allow-unsigned-atomvm"},
 		},
 	}
 	for _, c := range cases {
