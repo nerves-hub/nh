@@ -13,9 +13,9 @@ import (
 
 func TestUserAuthSavesToken(t *testing.T) {
 	resetState(t)
-	var gotPath, gotEmail, gotPassword, gotAuthHeader, gotNote string
+	var gotMethod, gotPath, gotEmail, gotPassword, gotAuthHeader, gotNote string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath = r.URL.Path
+		gotMethod, gotPath = r.Method, r.URL.Path
 		gotAuthHeader = r.Header.Get("Authorization")
 		var body struct {
 			Email, Password, Note string
@@ -23,7 +23,7 @@ func TestUserAuthSavesToken(t *testing.T) {
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		gotEmail, gotPassword, gotNote = body.Email, body.Password, body.Note
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":{"token":"nhu_secret","name":"alice"}}`))
+		_, _ = w.Write([]byte(`{"data":{"name":"alice","email":"alice@example.com","token":"nhu_secret"}}`))
 	}))
 	defer srv.Close()
 
@@ -47,8 +47,11 @@ func TestUserAuthSavesToken(t *testing.T) {
 	}
 
 	// The auth endpoint is hit unauthenticated, with the right credentials.
-	if gotPath != "/api/users/login" {
-		t.Errorf("path: want /api/users/login, got %q", gotPath)
+	if gotMethod != http.MethodPost {
+		t.Errorf("method: want POST, got %q", gotMethod)
+	}
+	if gotPath != "/api/users/auth" {
+		t.Errorf("path: want /api/users/auth, got %q", gotPath)
 	}
 	if gotAuthHeader != "" {
 		t.Errorf("auth request should be unauthenticated, got header %q", gotAuthHeader)

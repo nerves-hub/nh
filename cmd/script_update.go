@@ -35,9 +35,10 @@ import (
 var scriptUpdateCmd = &cobra.Command{
 	Use:   "update <id>",
 	Short: "Update a support script",
-	Long: `Update a support script's name, tags, or body.
+	Long: `Update a support script's name, tags, language, or body.
 
-Only the fields you supply (--name, --tags, --text/--text-file) are changed.`,
+Only the fields you supply (--name, --tags, --language, --text/--text-file)
+are changed. --tags "" removes all of the script's tags.`,
 	Args: scriptIDArgs,
 	RunE: runScriptUpdate,
 }
@@ -48,7 +49,10 @@ func init() {
 }
 
 func runScriptUpdate(cmd *cobra.Command, args []string) error {
-	id := args[0]
+	id, err := parseScriptID(args[0])
+	if err != nil {
+		return err
+	}
 
 	cfg := config.From(cmd.Context())
 	org, err := requireOrg(cfg)
@@ -68,7 +72,15 @@ func runScriptUpdate(cmd *cobra.Command, args []string) error {
 		changed = true
 	}
 	if cmd.Flags().Changed("tags") {
-		in.Tags, _ = cmd.Flags().GetString("tags")
+		tags, _ := cmd.Flags().GetString("tags")
+		in.Tags = &tags
+		changed = true
+	}
+	if cmd.Flags().Changed("language") {
+		in.Language, _ = cmd.Flags().GetString("language")
+		if in.Language == "" {
+			return errors.New("--language must not be empty: use elixir or shell")
+		}
 		changed = true
 	}
 	if text, textSet, err := resolveScriptText(cmd); err != nil {
@@ -78,7 +90,7 @@ func runScriptUpdate(cmd *cobra.Command, args []string) error {
 		changed = true
 	}
 	if !changed {
-		return errors.New("nothing to update: pass --name, --tags, --text, or --text-file")
+		return errors.New("nothing to update: pass --name, --tags, --language, --text, or --text-file")
 	}
 
 	client, err := newAuthedClient(cfg)
@@ -92,9 +104,10 @@ func runScriptUpdate(cmd *cobra.Command, args []string) error {
 	}
 
 	w := cmd.OutOrStdout()
+	warnIfLanguageIgnored(cmd, script)
 	if cfg.Output == config.OutputJSON {
 		return printJSON(w, script)
 	}
-	fmt.Fprintf(w, "Updated support script %s (id %s)\n", script.Name, script.ID)
+	fmt.Fprintf(w, "Updated support script %s (id %d)\n", script.Name, script.ID)
 	return nil
 }

@@ -24,7 +24,6 @@ package api
 
 import (
 	"context"
-	"net/url"
 )
 
 // userAuthRequest is the body sent to POST /users/auth.
@@ -49,11 +48,9 @@ type AuthResult struct {
 }
 
 // Authenticate exchanges an email and password for an API token via
-// POST /users/auth and returns the token.
-//
-// TODO: confirm the endpoint path ("/users/auth"), request fields, and
-// response envelope against the old nerves_hub_cli / NervesHub server before
-// release — the migration treats the old CLI's wire behavior as the spec.
+// POST /users/auth and returns the token and the user it belongs to. note
+// labels the token. (POST /users/login is the deprecated alias of the same
+// action; see NervesHubWeb.API.UserController.)
 func (c *Client) Authenticate(ctx context.Context, email, password, note string) (*AuthResult, error) {
 	var resp struct {
 		Data struct {
@@ -63,7 +60,7 @@ func (c *Client) Authenticate(ctx context.Context, email, password, note string)
 	}
 
 	body := userAuthRequest{Email: email, Password: password, Note: note}
-	if err := c.Post(ctx, "/users/login", body, &resp); err != nil {
+	if err := c.Post(ctx, "/users/auth", body, &resp); err != nil {
 		return nil, err
 	}
 
@@ -72,9 +69,6 @@ func (c *Client) Authenticate(ctx context.Context, email, password, note string)
 
 // CurrentUser returns the user associated with the client's token via
 // GET /users/me.
-//
-// TODO: confirm the endpoint path and response envelope against the old
-// nerves_hub_cli / NervesHub server before release.
 func (c *Client) CurrentUser(ctx context.Context) (*User, error) {
 	var resp struct {
 		Data User `json:"data"`
@@ -85,20 +79,13 @@ func (c *Client) CurrentUser(ctx context.Context) (*User, error) {
 	return &resp.Data, nil
 }
 
-// CLISession is returned by StartCLISession: a session token to poll with, the
-// URL the user must visit to confirm the login, and a confirmation code the
-// user can use to visually verify the authenticity of the flow.
+// CLISession is returned by StartCLISession: a session token to poll with,
+// the web page where the user signs in (the same for every login), and the
+// eight-digit confirmation code they type in there to find this login.
 type CLISession struct {
 	Token            string `json:"token"`
 	URL              string `json:"url"`
 	ConfirmationCode int    `json:"confirmation_code"`
-}
-
-// CLISessionStatus is returned when polling a CLI session. Status is "waiting"
-// until the user confirms in the browser, then "ready" with UserToken set.
-type CLISessionStatus struct {
-	Status    string `json:"status"`
-	UserToken string `json:"user_token"`
 }
 
 // cliSessionRequest is the body sent to POST /auth/cli_session. The note is a
@@ -107,25 +94,13 @@ type cliSessionRequest struct {
 	Note string `json:"note,omitempty"`
 }
 
-// StartCLISession begins a browser-confirmation login via
+// StartCLISession begins a CLI login via
 // POST /auth/cli_session. It is unauthenticated. note labels the issued token.
 func (c *Client) StartCLISession(ctx context.Context, note string) (*CLISession, error) {
 	var resp struct {
 		Data CLISession `json:"data"`
 	}
 	if err := c.Post(ctx, "/auth/cli_session", cliSessionRequest{Note: note}, &resp); err != nil {
-		return nil, err
-	}
-	return &resp.Data, nil
-}
-
-// CheckCLISession polls the status of a CLI session via
-// GET /auth/cli_session/{token}.
-func (c *Client) CheckCLISession(ctx context.Context, token string) (*CLISessionStatus, error) {
-	var resp struct {
-		Data CLISessionStatus `json:"data"`
-	}
-	if err := c.Get(ctx, "/auth/cli_session/"+url.PathEscape(token), nil, &resp); err != nil {
 		return nil, err
 	}
 	return &resp.Data, nil

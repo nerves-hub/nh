@@ -117,7 +117,8 @@ func runAuth(cmd *cobra.Command, _ []string) error {
 
 // hostname returns the local computer name for labelling the issued token. On
 // macOS it prefers the user-facing name from `scutil --get ComputerName`,
-// falling back to os.Hostname and finally "unknown".
+// falling back to os.Hostname and finally "unknown". A computer name is free
+// text, so tokenNote cleans it up before sending it.
 func hostname() string {
 	if runtime.GOOS == "darwin" {
 		if out, err := exec.Command("scutil", "--get", "ComputerName").Output(); err == nil {

@@ -444,32 +444,3 @@ func (c *Client) RunDeviceCode(ctx context.Context, org, product, identifier, co
 	}{Code: code}
 	return c.Post(ctx, devicePath(org, product, identifier)+"/code", body, nil)
 }
-
-// ListDeviceScripts lists the support scripts available to a device via
-// GET /orgs/{org}/products/{product}/devices/{identifier}/scripts.
-func (c *Client) ListDeviceScripts(ctx context.Context, org, product, identifier string) ([]SupportScript, error) {
-	if err := requireDeviceScope(org, product, identifier); err != nil {
-		return nil, err
-	}
-	var resp struct {
-		Data []SupportScript `json:"data"`
-	}
-	if err := c.Get(ctx, devicePath(org, product, identifier)+"/scripts", nil, &resp); err != nil {
-		return nil, err
-	}
-	return resp.Data, nil
-}
-
-// SendDeviceScript runs a support script on a device via
-// POST /orgs/{org}/products/{product}/devices/{identifier}/scripts/{name_or_id}
-// and returns the script's text output.
-func (c *Client) SendDeviceScript(ctx context.Context, org, product, identifier, nameOrID string) (string, error) {
-	if err := requireDeviceScope(org, product, identifier); err != nil {
-		return "", err
-	}
-	if nameOrID == "" {
-		return "", errors.New("api: script name or id is required")
-	}
-	path := devicePath(org, product, identifier) + "/scripts/" + url.PathEscape(nameOrID)
-	return c.postRawText(ctx, path)
-}

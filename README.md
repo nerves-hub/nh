@@ -51,7 +51,9 @@ Check your install with `nh --version`.
 Signing and uploading an fwup (`.fw`) image shells out to
 [`fwup`](https://github.com/fwup-home/fwup), which must be on your `PATH`. It is
 not needed for other firmware formats, for any other command, or when uploading
-with `--skip-signing`.
+with `--skip-signing`. `nh archive upload` also uses it to check an archive's
+metadata; with `--skip-signing` and no `fwup`, it warns and leaves that check to
+the server.
 
 Signing an ESP-IDF image shells out to `espsecure.py` (or `espsecure`) from
 [esptool](https://github.com/espressif/esptool) (`pip install esptool`). AtomVM
@@ -63,7 +65,7 @@ built, so neither needs anything extra.
 If you are using NervesCloud, all you need to do is authenticate and then point `nh` at the organization and product you work with most:
 
 ```sh
-# Sign in by confirming in your browser (recommended)
+# Sign in on the web and enter the code nh shows (recommended)
 nh user login
 
 # ...or sign in with email and password
@@ -117,7 +119,9 @@ variable — see [Configuration](#configuration)):
 ### Command reference
 
 **`nh user`** — authenticate and inspect the current user
-- `login` — authenticate by confirming in your browser
+- `login` — authenticate by signing in on the web and entering the eight-digit
+  code `nh` shows; it opens the URL in your browser when run in a terminal
+  (`--no-browser` to stop that), and the code lasts five minutes
 - `auth` — sign in with email and password and save an API token
 - `logout` — remove the saved API token
 - `whoami` — show the currently authenticated user
@@ -188,6 +192,12 @@ variable — see [Configuration](#configuration)):
   `create --shared-secret` also creates the device's own shared secret in the
   same transaction and prints it; the secret is shown only once
 - `delete <identifier>`
+- `import <manifest.json>` — create devices, with their certificates, from a
+  Microchip Trust&Go manifest (`-` reads standard input; `--tag`, repeatable).
+  nh checks every entry first and sends nothing if any has a problem;
+  `--dry-run` only checks, offline. NervesHub creates the devices in the
+  background and reports how many it created on the product's notifications
+  page
 - `upgrade <identifier> <firmware-uuid>` — upgrade a device to a firmware
 - `move <identifier>` — move a device to another product
 - `reboot <identifier>`, `reconnect <identifier>`
@@ -203,13 +213,20 @@ variable — see [Configuration](#configuration)):
   `--list-keys` lists the metric names in the fetched reports, and
   `-f`/`--follow` tails new readings by polling (`--interval`)
 - `run-code <identifier> <code>` — run Elixir code on a device
-- `scripts <identifier>`, `run-script <identifier> <name-or-id>` — support scripts
+- `scripts <identifier>` — list the support scripts a device can run (`--page`,
+  `--page-size`); `--org`/`--product` are optional (set both or neither), and when
+  set the device must belong to that product
+- `run-script <identifier> <name-or-id>` — run a support script and print its
+  output; `--timeout` (e.g. `2m`, server default 30s) is how long the server waits
+  for the device
 - `network-identities <identifier>` — list the keys a device reports holding on
   other networks (iroh/NetBird/Tailscale/WireGuard); `--service`/`--instance` filters
 - `certificates` — manage a device's certificates
   - `list <identifier>`, `show <identifier> <serial>`, `delete <identifier> <serial>`
   - `generate <identifier>` — generate a device key and CSR or signed certificate locally
   - `upload <identifier> <certificate path>` — upload a certificate for a device
+  - `lookup <certificate path>` — find the device, anywhere in the org, that a
+    PEM or DER certificate is registered to (only the certificate is sent)
 - `shared-secrets` — manage a device's own shared secrets (`nhd_` keys)
   - `list <identifier>` — list the device's keys, deactivated ones included
     (secrets are never listed)
@@ -239,6 +256,13 @@ variable — see [Configuration](#configuration)):
   unsigned ESP-IDF or AtomVM images (`--allow-unsigned-esp-idf` /
   `--allow-unsigned-atomvm`). `list` and `show` report each firmware's format
   (`tool`), and `show` its size
+
+**`nh archive`** — manage archives (supporting fwup files a deployment group
+release can deliver to devices)
+- `list`, `show <uuid>`, `download <uuid>` (`--file <path>`, or `--file -` for stdout)
+- `upload <path>` — check the archive's metadata (its `meta-version` must be
+  SemVer), sign it (via `fwup`), and upload it (`--key`, `--key-file`,
+  `--password`, `--skip-signing`). The API has no archive delete
 
 **`nh deployment`** — manage deployment groups
 - `list`, `show <name>`, `create <name>`, `update <name>`, `delete <name>`
@@ -272,8 +296,25 @@ no sign-in needed); `--timeout` sets how long to wait
 - `register <identifier>` — register an endpoint id; `--instance`, `--user-email`, `--detail key=value`
 - `show <identifier>`, `delete <identifier>`
 
-**`nh script`** — manage support scripts
+**`nh webhook`** — manage an organization's webhooks (the endpoints device events are sent to)
+- `list`, `show <id>` — signing secrets are never listed or shown
+- `create` — `--url` and `--events` (comma-separated or repeated) are required;
+  `--products` limits it to some products (otherwise every product, including
+  ones added later), plus `--description` and `--enabled=false`. Prints the
+  signing secret once: NervesHub won't show it again
+- `update <id>` — sends only the flags given: `--url`, `--description`,
+  `--events`, `--products`, `--all-products`, `--enabled[=false]`
+- `delete <id>` — asks first (`--yes` to skip)
+- `regenerate-secret <id>` — replace the signing secret and print the new one
+  once; the old one stops working at once (asks first, `--yes` to skip)
+- `test <id>` — send a `webhook.test` event and report how the endpoint answered;
+  exits non-zero when it wasn't accepted
+
+**`nh script`** — manage support scripts (ids are the integers `list` shows)
 - `list`, `show <id>`, `create`, `update <id>`, `delete <id>`
+- `create`/`update` take `--name`, `--text` or `--text-file`, `--tags` (comma-separated;
+  `--tags ""` on update clears them) and `--language elixir|shell` (how the device
+  runs the body; the server defaults to `elixir`)
 
 **`nh config`** — view and change persisted CLI defaults (see below)
 
@@ -373,7 +414,7 @@ Every variable is read with the `NERVES_HUB_` prefix and, equivalently, the
 | `NERVES_HUB_PRODUCT` | Default product scope | saved settings |
 | `NERVES_HUB_DATA_DIR` | Directory for local state (settings, keys) | `~/.nh` |
 | `NERVES_HUB_NON_INTERACTIVE` | Disable all prompts; missing input is an error (useful in CI) | `false` |
-| `NERVES_HUB_PRIVATE_KEY` | Unencrypted base64 Ed25519 signing key for `firmware upload` of fwup and AtomVM images (alternative to `--key`) | — |
+| `NERVES_HUB_PRIVATE_KEY` | Unencrypted base64 Ed25519 signing key for `firmware upload` of fwup and AtomVM images, and for `archive upload` (alternative to `--key`) | — |
 | `NERVES_HUB_DEPLOYMENT_NAME` | Deployment group `firmware upload` updates when `--deploy` is not given | — |
 
 Boolean variables accept `1`, `true`, `yes`, `y`, or `on` (case-insensitive).
@@ -418,6 +459,7 @@ behavior in `internal/`:
   Secure Boot v2 RSA-3072, RAUC certificates)
 - `internal/phoenix/` — Phoenix Channels client (device console / shell)
 - `internal/mix/` — Mix / Nerves project integration helpers
+- `internal/semver/` — Semantic Versioning 2.0.0 checks (archive versions)
 
 ## Contributing
 

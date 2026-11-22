@@ -30,12 +30,18 @@ import (
 )
 
 // SupportScript is a product support script, as returned by the scripts
-// endpoints. List responses populate only ID, Name, and Tags; the show response
-// adds Text, timestamps, and CreatedBy.
+// endpoints (NervesHubWeb.API.ScriptJSON). List responses populate only ID,
+// Name, Language and Tags; the show response adds Text, timestamps, and
+// CreatedBy.
+//
+// The server sends ID as an integer and Tags as a JSON array of strings (the
+// schema's `Tag` type), or null when the script has none. The published
+// OpenAPI spec types both as strings, which is wrong.
 type SupportScript struct {
-	ID         string             `json:"id"`
+	ID         int64              `json:"id"`
 	Name       string             `json:"name"`
-	Tags       string             `json:"tags"`
+	Language   string             `json:"language,omitempty"`
+	Tags       []string           `json:"tags"`
 	Text       string             `json:"text,omitempty"`
 	InsertedAt *Timestamp         `json:"inserted_at,omitempty"`
 	UpdatedAt  *Timestamp         `json:"updated_at,omitempty"`
@@ -44,17 +50,28 @@ type SupportScript struct {
 
 // SupportScriptUser is the user that created a support script.
 type SupportScriptUser struct {
-	ID    string `json:"id"`
+	ID    int64  `json:"id"`
 	Name  string `json:"name"`
 	Email string `json:"email"`
 }
+
+// Support script languages the server accepts (Script's `language` enum).
+const (
+	SupportScriptLanguageElixir = "elixir"
+	SupportScriptLanguageShell  = "shell"
+)
 
 // SupportScriptInput is the create/update body. Empty fields are omitted, so an
 // update only changes the fields provided.
 type SupportScriptInput struct {
 	Name string `json:"name,omitempty"`
-	Tags string `json:"tags,omitempty"`
-	Text string `json:"text,omitempty"`
+	// Tags is a comma-separated list, which the server splits and trims. Nil
+	// leaves the script's tags alone; a pointer to "" clears them.
+	Tags *string `json:"tags,omitempty"`
+	Text string  `json:"text,omitempty"`
+	// Language is how the device interprets Text: "elixir" (the server's
+	// default) or "shell".
+	Language string `json:"language,omitempty"`
 }
 
 // SupportScriptList is a page of support scripts plus pagination metadata.
@@ -93,7 +110,7 @@ func (c *Client) ListSupportScripts(ctx context.Context, org, product string, op
 
 // GetSupportScript returns a single support script by id via
 // GET /orgs/{org}/products/{product}/scripts/{id}.
-func (c *Client) GetSupportScript(ctx context.Context, org, product, id string) (*SupportScript, error) {
+func (c *Client) GetSupportScript(ctx context.Context, org, product string, id int64) (*SupportScript, error) {
 	if err := requireScriptID(org, product, id); err != nil {
 		return nil, err
 	}
@@ -123,7 +140,7 @@ func (c *Client) CreateSupportScript(ctx context.Context, org, product string, i
 
 // UpdateSupportScript updates a support script via
 // PUT /orgs/{org}/products/{product}/scripts/{id}.
-func (c *Client) UpdateSupportScript(ctx context.Context, org, product, id string, in SupportScriptInput) (*SupportScript, error) {
+func (c *Client) UpdateSupportScript(ctx context.Context, org, product string, id int64, in SupportScriptInput) (*SupportScript, error) {
 	if err := requireScriptID(org, product, id); err != nil {
 		return nil, err
 	}
@@ -138,7 +155,7 @@ func (c *Client) UpdateSupportScript(ctx context.Context, org, product, id strin
 
 // DeleteSupportScript deletes a support script via
 // DELETE /orgs/{org}/products/{product}/scripts/{id}.
-func (c *Client) DeleteSupportScript(ctx context.Context, org, product, id string) error {
+func (c *Client) DeleteSupportScript(ctx context.Context, org, product string, id int64) error {
 	if err := requireScriptID(org, product, id); err != nil {
 		return err
 	}
@@ -155,12 +172,13 @@ func requireOrgProduct(org, product string) error {
 	return nil
 }
 
-func requireScriptID(org, product, id string) error {
+func requireScriptID(org, product string, id int64) error {
 	if err := requireOrgProduct(org, product); err != nil {
 		return err
 	}
-	if id == "" {
-		return errors.New("api: support script id is required")
+	// The server only looks up ids that parse as positive integers.
+	if id <= 0 {
+		return errors.New("api: support script id must be a positive integer")
 	}
 	return nil
 }
@@ -169,6 +187,6 @@ func scriptsPath(org, product string) string {
 	return "/orgs/" + url.PathEscape(org) + "/products/" + url.PathEscape(product) + "/scripts"
 }
 
-func scriptPath(org, product, id string) string {
-	return scriptsPath(org, product) + "/" + url.PathEscape(id)
+func scriptPath(org, product string, id int64) string {
+	return scriptsPath(org, product) + "/" + strconv.FormatInt(id, 10)
 }
