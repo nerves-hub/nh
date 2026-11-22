@@ -199,18 +199,11 @@ func releaseAuthorLabel(a *api.ReleaseAuthor) string {
 		return "API key " + orDash(a.Name)
 	case a.Email != "" && a.Name != "":
 		return a.Name + " <" + a.Email + ">"
+	case a.Name != "":
+		return a.Name
 	default:
-		return orDash(firstNonEmptyString(a.Name, a.Email))
+		return orDash(a.Email)
 	}
-}
-
-func firstNonEmptyString(vals ...string) string {
-	for _, v := range vals {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }
 
 // ── create ──────────────────────────────────────────────────────────────────

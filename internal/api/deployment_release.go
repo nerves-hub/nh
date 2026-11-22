@@ -294,6 +294,22 @@ func (c *Client) sendRelease(ctx context.Context, org, product, name string, rb 
 	return c.putDeployment(ctx, org, product, name, rb)
 }
 
+// DeployFirmware gives a deployment group a new release of firmware, with no
+// archive, and changes nothing else. Like UpdateDeployment it uses
+// POST .../releases where the server has it and the release PUT otherwise, but
+// it doesn't read the group back afterwards, so a failed read can't report a
+// release that was made as a failure.
+func (c *Client) DeployFirmware(ctx context.Context, org, product, name, firmware string) error {
+	if err := checkReleaseScope(org, product, name); err != nil {
+		return err
+	}
+	if firmware == "" {
+		return errors.New("api: firmware is required to deploy")
+	}
+	_, err := c.sendRelease(ctx, org, product, name, releaseBody{Firmware: firmware}, false)
+	return err
+}
+
 func checkReleaseScope(org, product, name string) error {
 	if org == "" {
 		return errors.New("api: org is required")

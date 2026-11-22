@@ -93,7 +93,7 @@ func publishServerFor(t *testing.T, releases bool) (srv *httptest.Server, deploy
 			record(filepath.Base(filepath.Dir(r.URL.Path)), body)
 			w.WriteHeader(http.StatusCreated)
 			_, _ = w.Write([]byte(`{"data":{"number":2,"firmware":{"uuid":"new-uuid"}}}`))
-		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/deployments/"):
+		case !releases && r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/deployments/"):
 			_, _ = w.Write([]byte(`{"data":{"name":"x"}}`))
 		case !releases && r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/deployments/"):
 			dep, _ := body["deployment"].(map[string]any)
@@ -316,10 +316,12 @@ func TestFirmwareUploadDeployFailureSaysUploadSucceeded(t *testing.T) {
 	stubFwupMeta(t, map[string]string{"product": "thermostat"})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		if r.Method == http.MethodPost {
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/firmwares") {
 			_, _ = w.Write([]byte(`{"data":{"uuid":"new-uuid","version":"1.4.0"}}`))
 			return
 		}
+		// The group "nope" doesn't exist: its releases and the group itself
+		// are both 404.
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = w.Write([]byte(`{"errors":{"detail":"Not Found"}}`))
 	}))

@@ -438,3 +438,39 @@ func TestUpdateDeploymentReportsFailedReadBack(t *testing.T) {
 		t.Errorf("want %q, got %v", want, err)
 	}
 }
+
+// DeployFirmware makes the release and stops: the group isn't read back.
+func TestDeployFirmwareDoesNotReadBack(t *testing.T) {
+	c, reqs := fakeDeploymentServer(t, func(_ int, r deploymentRequest) (int, string) {
+		if r.Method == http.MethodPost {
+			return http.StatusCreated, `{"data":{"number":2}}`
+		}
+		return http.StatusServiceUnavailable, `{"errors":{"detail":"maintenance"}}`
+	})
+
+	if err := c.DeployFirmware(context.Background(), "acme", "thermostat", "production", "fw-2"); err != nil {
+		t.Fatalf("DeployFirmware: %v", err)
+	}
+	if len(*reqs) != 1 {
+		t.Fatalf("want only the POST, got %+v", *reqs)
+	}
+	if body := (*reqs)[0].release(t); len(body) != 1 || body["firmware"] != "fw-2" {
+		t.Errorf("body: %+v", body)
+	}
+}
+
+func TestDeployFirmwareFallsBack(t *testing.T) {
+	c, reqs := fakeDeploymentServer(t, oldServer(func(deploymentRequest) (int, string) {
+		return http.StatusOK, groupJSON
+	}))
+
+	if err := c.DeployFirmware(context.Background(), "acme", "thermostat", "production", "fw-2"); err != nil {
+		t.Fatalf("DeployFirmware: %v", err)
+	}
+	if len(*reqs) != 3 || (*reqs)[1].Method != http.MethodGet {
+		t.Fatalf("want POST, GET, PUT; got %+v", *reqs)
+	}
+	if dep := (*reqs)[2].deployment(t); len(dep) != 1 || dep["firmware"] != "fw-2" {
+		t.Errorf("release PUT body: %+v", dep)
+	}
+}
