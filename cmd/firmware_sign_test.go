@@ -92,7 +92,7 @@ func TestFirmwareUploadSigned(t *testing.T) {
 	priv := writeSigningKey(t, dataDir, "acme", "ci", "")
 
 	fwPath := filepath.Join(t.TempDir(), "image.fw")
-	if err := os.WriteFile(fwPath, []byte("FWDATA"), 0o644); err != nil {
+	if err := os.WriteFile(fwPath, []byte(fwupTestData), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -121,7 +121,7 @@ func TestFirmwareUploadSigned(t *testing.T) {
 	}
 
 	// The signed image was uploaded, under the original filename.
-	if *gotContent != "FWDATASIGNED" {
+	if *gotContent != fwupTestData+"SIGNED" {
 		t.Errorf("uploaded content: got %q, want signed image", *gotContent)
 	}
 	if *gotName != "image.fw" {
@@ -149,7 +149,7 @@ func TestFirmwareUploadSignsByDefaultFromEnv(t *testing.T) {
 	t.Setenv("NERVES_HUB_PRIVATE_KEY", pki.PrivateKeyString(priv))
 
 	fwPath := filepath.Join(t.TempDir(), "image.fw")
-	if err := os.WriteFile(fwPath, []byte("FWDATA"), 0o644); err != nil {
+	if err := os.WriteFile(fwPath, []byte(fwupTestData), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -169,7 +169,7 @@ func TestFirmwareUploadSignsByDefaultFromEnv(t *testing.T) {
 	if !strings.Contains(string(raw), pki.PrivateKeyString(priv)) {
 		t.Error("fwup did not receive the env private key")
 	}
-	if *gotContent != "FWDATASIGNED" {
+	if *gotContent != fwupTestData+"SIGNED" {
 		t.Errorf("uploaded content: got %q, want signed image", *gotContent)
 	}
 	if *gotName != "image.fw" {
@@ -191,7 +191,7 @@ func TestFirmwareUploadKeyFlagBeatsEnv(t *testing.T) {
 	t.Setenv("NERVES_CLOUD_PRIVATE_KEY", pki.PrivateKeyString(envPriv))
 
 	fwPath := filepath.Join(t.TempDir(), "image.fw")
-	if err := os.WriteFile(fwPath, []byte("FWDATA"), 0o644); err != nil {
+	if err := os.WriteFile(fwPath, []byte(fwupTestData), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -218,7 +218,7 @@ func TestFirmwareUploadNoKeyErrors(t *testing.T) {
 	t.Setenv("NERVES_HUB_PRIVATE_KEY", "")
 
 	fwPath := filepath.Join(t.TempDir(), "image.fw")
-	if err := os.WriteFile(fwPath, []byte("FWDATA"), 0o644); err != nil {
+	if err := os.WriteFile(fwPath, []byte(fwupTestData), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -237,7 +237,7 @@ func TestFirmwareUploadInvalidEnvKey(t *testing.T) {
 	t.Setenv("NERVES_HUB_PRIVATE_KEY", "not-base64!!")
 
 	fwPath := filepath.Join(t.TempDir(), "image.fw")
-	if err := os.WriteFile(fwPath, []byte("FWDATA"), 0o644); err != nil {
+	if err := os.WriteFile(fwPath, []byte(fwupTestData), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -253,7 +253,7 @@ func TestFirmwareUploadInvalidEnvKey(t *testing.T) {
 
 func TestFirmwareUploadKeyAndSkipConflict(t *testing.T) {
 	fwPath := filepath.Join(t.TempDir(), "image.fw")
-	if err := os.WriteFile(fwPath, []byte("FWDATA"), 0o644); err != nil {
+	if err := os.WriteFile(fwPath, []byte(fwupTestData), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -262,7 +262,7 @@ func TestFirmwareUploadKeyAndSkipConflict(t *testing.T) {
 		"--org", "acme", "--product", "thermostat",
 		"--uri", "https://example.com", "--token", "tok",
 	)
-	if err == nil || !strings.Contains(err.Error(), "only one of --key or --skip-signing") {
+	if err == nil || !strings.Contains(err.Error(), "only one of --key/--key-file or --skip-signing") {
 		t.Errorf("expected conflict error, got %v", err)
 	}
 }
@@ -275,7 +275,7 @@ func TestFirmwareUploadSignedWithPassword(t *testing.T) {
 	priv := writeSigningKey(t, dataDir, "acme", "ci", "s3cret")
 
 	fwPath := filepath.Join(t.TempDir(), "image.fw")
-	if err := os.WriteFile(fwPath, []byte("FWDATA"), 0o644); err != nil {
+	if err := os.WriteFile(fwPath, []byte(fwupTestData), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -292,7 +292,7 @@ func TestFirmwareUploadSignedWithPassword(t *testing.T) {
 	if !strings.Contains(string(raw), pki.PrivateKeyString(priv)) {
 		t.Error("fwup did not receive the decrypted key")
 	}
-	if *gotContent != "FWDATASIGNED" {
+	if *gotContent != fwupTestData+"SIGNED" {
 		t.Errorf("uploaded content: got %q", *gotContent)
 	}
 }
@@ -303,7 +303,7 @@ func TestFirmwareUploadSignedWrongPassword(t *testing.T) {
 	writeSigningKey(t, dataDir, "acme", "ci", "s3cret")
 
 	fwPath := filepath.Join(t.TempDir(), "image.fw")
-	if err := os.WriteFile(fwPath, []byte("FWDATA"), 0o644); err != nil {
+	if err := os.WriteFile(fwPath, []byte(fwupTestData), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -321,7 +321,7 @@ func TestFirmwareUploadSignedWrongPassword(t *testing.T) {
 func TestFirmwareUploadSignedMissingKey(t *testing.T) {
 	stubFwup(t)
 	fwPath := filepath.Join(t.TempDir(), "image.fw")
-	if err := os.WriteFile(fwPath, []byte("FWDATA"), 0o644); err != nil {
+	if err := os.WriteFile(fwPath, []byte(fwupTestData), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -345,7 +345,7 @@ func TestFirmwareUploadFwupMissing(t *testing.T) {
 	writeSigningKey(t, dataDir, "acme", "ci", "")
 
 	fwPath := filepath.Join(t.TempDir(), "image.fw")
-	if err := os.WriteFile(fwPath, []byte("FWDATA"), 0o644); err != nil {
+	if err := os.WriteFile(fwPath, []byte(fwupTestData), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -376,7 +376,7 @@ func TestFirmwareUploadSignFails(t *testing.T) {
 	writeSigningKey(t, dataDir, "acme", "ci", "")
 
 	fwPath := filepath.Join(t.TempDir(), "image.fw")
-	if err := os.WriteFile(fwPath, []byte("FWDATA"), 0o644); err != nil {
+	if err := os.WriteFile(fwPath, []byte(fwupTestData), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

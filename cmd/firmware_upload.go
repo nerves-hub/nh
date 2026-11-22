@@ -25,6 +25,8 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -36,6 +38,7 @@ import (
 
 	"github.com/nerves-hub/nh/internal/api"
 	"github.com/nerves-hub/nh/internal/config"
+	"github.com/nerves-hub/nh/internal/firmware"
 	"github.com/nerves-hub/nh/internal/mix"
 	"github.com/nerves-hub/nh/internal/pki"
 	"github.com/schollz/progressbar/v3"
@@ -56,17 +59,45 @@ var firmwareUploadCmd = &cobra.Command{
 	Use:     "upload [path]",
 	Aliases: []string{"publish"},
 	Short:   "Sign and upload a firmware file",
-	Long: `Sign a firmware image (.fw) and upload it to a product.
+	Long: `Sign a firmware image and upload it to a product.
 
 The path is optional inside a Nerves project: without one, nh looks for a single
 image under _build/<MIX_TARGET>_<MIX_ENV>/nerves/images/ and uses that.
 
-Firmware is signed before uploading unless --skip-signing is passed. Signing
-runs fwup, which must be installed. The private key comes from, in order:
+The format is detected from the file's contents, as the server does, not from
+its name. NervesHub accepts:
 
-  1. --key <name>, a signing key created with ` + "`nh key create`" + ` (if it is
-     password protected, supply --password or you will be prompted), or
-  2. NERVES_HUB_PRIVATE_KEY, an unencrypted base64 private key.
+  fwup     .fw     Nerves firmware archives
+  esp-idf  .bin    ESP-IDF application images
+  atomvm   .avm    AtomVM packbeam archives
+  rauc     .raucb  RAUC bundles (verity format)
+
+A product accepts only the formats in its allowed_update_tools (fwup by
+default); see ` + "`nh product update`" + `.
+
+Before uploading, nh reads the image's own metadata, shows it, and refuses an
+image built for a different product.
+
+Firmware is signed before uploading unless --skip-signing is passed:
+
+  fwup     Signed with fwup, which must be installed (it is needed only for
+           fwup images). The Ed25519 key comes from --key <name> (a key made
+           with ` + "`nh key create`" + `; supply --password if it has one), --key-file
+           <path> (an fwup private key, as written by ` + "`fwup -g`" + `), or the
+           NERVES_HUB_PRIVATE_KEY environment variable.
+  atomvm   Signed by nh itself with the same Ed25519 keys as fwup, by appending
+           a nerves_hub/signature entry. An archive that is already signed has
+           its signature replaced.
+  esp-idf  Signed with ` + "`espsecure.py sign_data --version 2`" + ` (from esptool)
+           using an RSA-3072 Secure Boot v2 key: --key <name> reads
+           <data-dir>/keys/<org>/<name>.rsa.pem, or pass --key-file <pem>. An
+           image that is already signed is uploaded as is.
+  rauc     Bundles are signed when they are built, so they are uploaded as is
+           and the signing flags do not apply.
+
+A product can accept unsigned ESP-IDF or AtomVM images through its
+allow_unsigned_esp_idf_firmware / allow_unsigned_atomvm_firmware settings; fwup
+archives are always verified.
 
 --deploy names a deployment group to point at the new firmware once the upload
 succeeds. It may be repeated to update several. When it is not given, the
@@ -77,11 +108,49 @@ NERVES_HUB_DEPLOYMENT_NAME environment variable is used if set.`,
 
 func init() {
 	firmwareUploadCmd.Flags().String("key", "", "signing key name (default: NERVES_HUB_PRIVATE_KEY)")
+	firmwareUploadCmd.Flags().String("key-file", "", "signing key file: an fwup private key, or an RSA PEM for ESP-IDF")
 	firmwareUploadCmd.Flags().String("password", "", "passphrase for the signing key (with --key)")
 	firmwareUploadCmd.Flags().Bool("skip-signing", false, "upload the firmware without signing it")
 	firmwareUploadCmd.Flags().StringArray("deploy", nil, "deployment group to update to this firmware after upload (repeatable)")
 	firmwareUploadCmd.Flags().BoolP("yes", "y", false, "skip the confirmation prompt shown when the firmware path is auto-detected")
 	firmwareCmd.AddCommand(firmwareUploadCmd)
+}
+
+// signingFlags are the upload flags that choose how, and whether, to sign.
+type signingFlags struct {
+	skip     bool
+	keyName  string
+	keyFile  string
+	password bool
+}
+
+func (f signingFlags) keyGiven() bool { return f.keyName != "" || f.keyFile != "" }
+
+func readSigningFlags(cmd *cobra.Command, format firmware.Format) (signingFlags, error) {
+	var f signingFlags
+	f.skip, _ = cmd.Flags().GetBool("skip-signing")
+	f.keyName, _ = cmd.Flags().GetString("key")
+	f.keyFile, _ = cmd.Flags().GetString("key-file")
+	f.password = cmd.Flags().Changed("password")
+
+	if f.keyName != "" && f.keyFile != "" {
+		return f, errors.New("use only one of --key or --key-file")
+	}
+	if f.skip && f.keyGiven() {
+		return f, errors.New("use only one of --key/--key-file or --skip-signing")
+	}
+	switch format {
+	case firmware.RAUC:
+		if f.keyGiven() || f.password {
+			return f, errors.New("RAUC bundles are signed when they are built (`rauc bundle --cert --key`), " +
+				"so nh uploads them as is: drop --key, --key-file and --password")
+		}
+	case firmware.ESPIDF:
+		if f.password {
+			return f, errors.New("--password does not apply to ESP-IDF keys: espsecure reads the PEM itself")
+		}
+	}
+	return f, nil
 }
 
 func runFirmwareUpload(cmd *cobra.Command, args []string) error {
@@ -106,9 +175,21 @@ func runFirmwareUpload(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// The server picks the update tool from the file's bytes, so nh does too:
+	// everything after this — the preview, signing — depends on it.
+	format, err := firmware.Detect(path)
+	if err != nil {
+		return fmt.Errorf("%s: %w", filepath.Base(path), err)
+	}
+
+	flags, err := readSigningFlags(cmd, format)
+	if err != nil {
+		return err
+	}
+
 	// Read the image's own metadata to catch the wrong product before anything
 	// is uploaded, and to show what is about to be published.
-	if err := reviewFirmware(cmd, cfg, path, product, detected); err != nil {
+	if err := reviewFirmware(cmd, cfg, path, format, product, detected); err != nil {
 		if errors.Is(err, errAborted) {
 			fmt.Fprintln(cmd.OutOrStdout(), "Aborted.")
 			return nil
@@ -116,25 +197,13 @@ func runFirmwareUpload(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	skipSigning, _ := cmd.Flags().GetBool("skip-signing")
-	keyName, _ := cmd.Flags().GetString("key")
-	if skipSigning && keyName != "" {
-		return errors.New("use only one of --key or --skip-signing")
-	}
-
-	// Sign by default: to a temp file, which is uploaded in place of the
-	// original.
+	// Sign to a temp file, which is uploaded in place of the original.
 	uploadPath := path
-	if !skipSigning {
-		privateKey, keyLabel, err := resolveUploadSigningKey(cmd, cfg, org, keyName)
-		if err != nil {
-			return err
-		}
-		fmt.Fprintf(cmd.ErrOrStderr(), "Signing %s with %s\n", filepath.Base(path), keyLabel)
-		signedPath, err := signFirmware(cmd.Context(), path, privateKey)
-		if err != nil {
-			return err
-		}
+	signedPath, err := signForUpload(cmd, cfg, org, path, format, flags)
+	if err != nil {
+		return err
+	}
+	if signedPath != "" {
 		defer os.Remove(signedPath)
 		uploadPath = signedPath
 	}
@@ -166,16 +235,16 @@ func runFirmwareUpload(cmd *cobra.Command, args []string) error {
 
 	// The original path is passed so the server sees the original filename
 	// even when the bytes come from the signed temp file.
-	firmware, err := client.UploadFirmware(cmd.Context(), org, product, path, body)
+	uploaded, err := client.UploadFirmware(cmd.Context(), org, product, path, body)
 	finishBar(bar)
 	if err != nil {
-		return err
+		return uploadErrorHint(err, format, product)
 	}
 
 	w := cmd.OutOrStdout()
 	if cfg.Output != config.OutputJSON {
-		if firmware.UUID != "" || firmware.Version != "" {
-			fmt.Fprintf(w, "Uploaded firmware %s (%s)\n", orDash(firmware.Version), orDash(firmware.UUID))
+		if uploaded.UUID != "" || uploaded.Version != "" {
+			fmt.Fprintf(w, "Uploaded firmware %s (%s)\n", orDash(uploaded.Version), orDash(uploaded.UUID))
 		} else {
 			fmt.Fprintf(w, "Uploaded %s\n", filepath.Base(path))
 		}
@@ -183,7 +252,7 @@ func runFirmwareUpload(cmd *cobra.Command, args []string) error {
 
 	// Point deployment groups at the new firmware. This runs after the upload
 	// has succeeded, so a failure here leaves the firmware in place and says so.
-	updated, err := deployFirmware(cmd, client, org, product, firmware.UUID)
+	updated, err := deployFirmware(cmd, client, org, product, uploaded.UUID)
 	if err != nil {
 		return err
 	}
@@ -192,9 +261,152 @@ func runFirmwareUpload(cmd *cobra.Command, args []string) error {
 		return printJSON(w, struct {
 			*api.Firmware
 			Deployed []string `json:"deployed,omitempty"`
-		}{Firmware: firmware, Deployed: updated})
+		}{Firmware: uploaded, Deployed: updated})
 	}
 	return nil
+}
+
+// signForUpload signs the image as its format requires, returning the path of
+// a signed temporary copy, or "" when the original is to be uploaded as is.
+// The caller removes the temporary copy.
+func signForUpload(cmd *cobra.Command, cfg *config.Config, org, path string, format firmware.Format, flags signingFlags) (string, error) {
+	stderr := cmd.ErrOrStderr()
+	name := filepath.Base(path)
+
+	if format == firmware.RAUC {
+		fmt.Fprintf(stderr, "RAUC bundles are signed when they are built; uploading %s as is\n", name)
+		return "", nil
+	}
+	if flags.skip {
+		return "", nil
+	}
+
+	switch format {
+	case firmware.ESPIDF:
+		signed, err := firmware.ESPIDFSigned(path)
+		if err != nil {
+			return "", err
+		}
+		if signed {
+			fmt.Fprintf(stderr, "%s already carries a Secure Boot v2 signature; uploading it as is\n", name)
+			return "", nil
+		}
+		keyFile, label, err := resolveESPIDFKey(cfg, org, flags)
+		if err != nil {
+			return "", err
+		}
+		out, err := signedTempPath(format)
+		if err != nil {
+			return "", err
+		}
+		fmt.Fprintf(stderr, "Signing %s with %s\n", name, label)
+		if err := firmware.SignESPIDF(cmd.Context(), path, keyFile, out); err != nil {
+			os.Remove(out)
+			if errors.Is(err, firmware.ErrEspsecureNotFound) {
+				return "", errors.New("espsecure.py not found: install esptool (`pip install esptool`) to sign " +
+					"ESP-IDF images, or sign the image yourself and upload it with --skip-signing")
+			}
+			return "", err
+		}
+		return out, nil
+
+	case firmware.AtomVM:
+		priv, label, err := resolveUploadSigningKey(cmd, cfg, org, flags)
+		if err != nil {
+			return "", err
+		}
+		out, err := signedTempPath(format)
+		if err != nil {
+			return "", err
+		}
+		fmt.Fprintf(stderr, "Signing %s with %s\n", name, label)
+		replaced, err := firmware.SignAtomVMFile(path, out, priv)
+		if err != nil {
+			os.Remove(out)
+			return "", fmt.Errorf("signing %s: %w", name, err)
+		}
+		if replaced {
+			fmt.Fprintf(stderr, "Replaced the signature %s already carried\n", name)
+		}
+		return out, nil
+
+	default: // fwup
+		priv, label, err := resolveUploadSigningKey(cmd, cfg, org, flags)
+		if err != nil {
+			return "", err
+		}
+		fmt.Fprintf(stderr, "Signing %s with %s\n", name, label)
+		return signFirmware(cmd.Context(), path, pki.PrivateKeyString(priv))
+	}
+}
+
+// signedTempPath creates an empty temporary file named for the format, so a
+// signed .avm is not left lying around as a .fw.
+func signedTempPath(format firmware.Format) (string, error) {
+	out, err := os.CreateTemp("", "nh-signed-*"+format.Extension())
+	if err != nil {
+		return "", fmt.Errorf("creating temporary file: %w", err)
+	}
+	out.Close()
+	return out.Name(), nil
+}
+
+// resolveESPIDFKey picks the RSA-3072 PEM used to sign an ESP-IDF image:
+// --key-file as given, or --key <name> under the data directory.
+func resolveESPIDFKey(cfg *config.Config, org string, flags signingFlags) (path, label string, err error) {
+	if flags.keyFile != "" {
+		if _, err := os.Stat(flags.keyFile); err != nil {
+			return "", "", fmt.Errorf("signing key file: %w", err)
+		}
+		return flags.keyFile, "key file " + filepath.Base(flags.keyFile), nil
+	}
+	if flags.keyName != "" {
+		if err := validKeyName(flags.keyName); err != nil {
+			return "", "", err
+		}
+		p := filepath.Join(cfg.DataDir, "keys", org, flags.keyName+".rsa.pem")
+		if _, err := os.Stat(p); err != nil {
+			if os.IsNotExist(err) {
+				return "", "", fmt.Errorf("ESP-IDF signing key %q not found at %s; pass --key-file <pem> "+
+					"to use a key kept elsewhere", flags.keyName, p)
+			}
+			return "", "", err
+		}
+		return p, "key " + flags.keyName, nil
+	}
+	return "", "", errors.New("ESP-IDF images are signed with an RSA-3072 Secure Boot v2 key: pass --key <name> " +
+		"or --key-file <pem>, or --skip-signing to upload the image unsigned " +
+		"(the product must allow it: allow_unsigned_esp_idf_firmware, see `nh product update`)")
+}
+
+// uploadErrorHint adds what to do next to the server's reasons for refusing
+// an upload. The server's own message (errors.detail) is kept as is.
+func uploadErrorHint(err error, format firmware.Format, product string) error {
+	var apiErr *api.APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusUnprocessableEntity {
+		return err
+	}
+	msg := strings.ToLower(apiErr.Message)
+	var hint string
+	switch {
+	case strings.Contains(msg, "does not accept"):
+		hint = fmt.Sprintf("an org owner can add %q to the allowed_update_tools of product %s with `nh product update`", format, product)
+	case strings.Contains(msg, "not signed") && format == firmware.AtomVM:
+		// The server words this one for ESP-IDF whatever the format.
+		hint = "this packbeam is unsigned: upload it without --skip-signing to sign it with --key, " +
+			"or allow unsigned AtomVM firmware (allow_unsigned_atomvm_firmware) with `nh product update`"
+	case strings.Contains(msg, "not signed"):
+		hint = "sign the image with --key or --key-file, or allow unsigned ESP-IDF firmware " +
+			"(allow_unsigned_esp_idf_firmware) with `nh product update`"
+	case strings.Contains(msg, "no signing keys"):
+		hint = "register the public half of your signing key with the organization first (see `nh key --help`)"
+	case strings.Contains(msg, "does not match any of this organization's signing keys"):
+		hint = "check the key you signed with is registered to the organization (see `nh key list`)"
+	}
+	if hint == "" {
+		return err
+	}
+	return fmt.Errorf("%w\nhint: %s", err, hint)
 }
 
 // resolveFirmwarePath returns the firmware to upload: the given path, or the
@@ -249,27 +461,67 @@ func readFirmwareMetadata(ctx context.Context, path string) (firmwareMetadata, e
 // Unreadable metadata is only a warning — fwup is optional when --skip-signing
 // is used, and failing the upload over a missing preview would be worse than
 // proceeding without one.
-func reviewFirmware(cmd *cobra.Command, cfg *config.Config, path, product string, detected bool) error {
+func reviewFirmware(cmd *cobra.Command, cfg *config.Config, path string, format firmware.Format, product string, detected bool) error {
 	stderr := cmd.ErrOrStderr()
 
-	meta, err := readFirmwareMetadata(cmd.Context(), path)
+	meta, warnings, err := readImageMetadata(cmd.Context(), path, format)
 	if err != nil {
-		fmt.Fprintf(stderr, "Warning: could not read firmware metadata (%v)\n", err)
+		fmt.Fprintf(stderr, "Warning: could not read %s metadata (%v)\n", format, err)
 		return confirmFirmwareUpload(cmd, cfg, path, product, detected)
 	}
 
-	if got := meta["product"]; got != "" && got != product {
+	if meta.Product != "" && meta.Product != product {
 		return fmt.Errorf("firmware is built for product %q but you are uploading to %q; "+
-			"check --product, or the :app/:name in the project's mix.exs", got, product)
+			"check --product, or %s", meta.Product, product, productSource(format))
 	}
 
-	fmt.Fprintf(stderr, "\n  product:      %s\n", orDash(meta["product"]))
-	fmt.Fprintf(stderr, "  version:      %s\n", orDash(meta["version"]))
-	fmt.Fprintf(stderr, "  platform:     %s\n", orDash(meta["platform"]))
-	fmt.Fprintf(stderr, "  architecture: %s\n", orDash(meta["architecture"]))
-	fmt.Fprintf(stderr, "  uuid:         %s\n\n", orDash(meta["uuid"]))
+	uuid := orDash(meta.UUID)
+	if format == firmware.AtomVM {
+		uuid = "(assigned from the uploaded file)"
+	}
+	fmt.Fprintf(stderr, "\n  format:       %s\n", format)
+	fmt.Fprintf(stderr, "  product:      %s\n", orDash(meta.Product))
+	fmt.Fprintf(stderr, "  version:      %s\n", orDash(meta.Version))
+	fmt.Fprintf(stderr, "  platform:     %s\n", orDash(meta.Platform))
+	fmt.Fprintf(stderr, "  architecture: %s\n", orDash(meta.Architecture))
+	fmt.Fprintf(stderr, "  uuid:         %s\n\n", uuid)
+	for _, w := range warnings {
+		fmt.Fprintf(stderr, "Warning: %s\n", w)
+	}
 
 	return confirmFirmwareUpload(cmd, cfg, path, product, detected)
+}
+
+// readImageMetadata reads an image's metadata: through `fwup -m` for fwup,
+// and natively for every other format.
+func readImageMetadata(ctx context.Context, path string, format firmware.Format) (firmware.Metadata, []string, error) {
+	if format != firmware.Fwup {
+		return firmware.ReadMetadata(format, path)
+	}
+	meta, err := readFirmwareMetadata(ctx, path)
+	if err != nil {
+		return firmware.Metadata{}, nil, err
+	}
+	return firmware.Metadata{
+		Product:      meta["product"],
+		Version:      meta["version"],
+		Platform:     meta["platform"],
+		Architecture: meta["architecture"],
+		UUID:         meta["uuid"],
+	}, nil, nil
+}
+
+// productSource names where each format's build declares its product.
+func productSource(format firmware.Format) string {
+	switch format {
+	case firmware.ESPIDF:
+		return "PROJECT_NAME in the project's CMakeLists.txt"
+	case firmware.AtomVM:
+		return "the application name in the project's .app.src"
+	case firmware.RAUC:
+		return "[meta.nerveshub] product (or [update] compatible) in the bundle's manifest"
+	}
+	return "the :app/:name in the project's mix.exs"
 }
 
 // confirmFirmwareUpload asks before uploading, but only when nh picked the file
@@ -334,63 +586,96 @@ func deployTargets(cmd *cobra.Command) []string {
 	return nil
 }
 
-// resolveUploadSigningKey picks the private key used to sign an upload: the
-// named stored key when --key is given, otherwise an unencrypted key from the
-// NERVES_HUB_PRIVATE_KEY environment variable. It returns the key in the
-// base64 form fwup expects plus a human-readable label for status output.
-func resolveUploadSigningKey(cmd *cobra.Command, cfg *config.Config, org, keyName string) (key, label string, err error) {
-	if keyName != "" {
-		k, err := resolveSigningKey(cmd, cfg, org, keyName)
-		return k, "key " + keyName, err
+// resolveUploadSigningKey picks the Ed25519 key used to sign an fwup or
+// AtomVM upload: the named stored key for --key, the file for --key-file,
+// otherwise an unencrypted key from the NERVES_HUB_PRIVATE_KEY environment
+// variable. It returns a human-readable label for status output too.
+func resolveUploadSigningKey(cmd *cobra.Command, cfg *config.Config, org string, flags signingFlags) (ed25519.PrivateKey, string, error) {
+	if flags.keyName != "" {
+		k, err := resolveSigningKey(cmd, cfg, org, flags.keyName)
+		return k, "key " + flags.keyName, err
+	}
+	if flags.keyFile != "" {
+		k, err := readSigningKeyFile(cmd, cfg, flags.keyFile)
+		return k, "key file " + filepath.Base(flags.keyFile), err
 	}
 
 	if env := config.Env("PRIVATE_KEY"); env != "" {
 		priv, err := pki.ParsePrivateKeyString(env)
 		if err != nil {
-			return "", "", fmt.Errorf("invalid NERVES_HUB_PRIVATE_KEY: %w", err)
+			return nil, "", fmt.Errorf("invalid NERVES_HUB_PRIVATE_KEY: %w", err)
 		}
-		return pki.PrivateKeyString(priv), "key from NERVES_HUB_PRIVATE_KEY", nil
+		return priv, "key from NERVES_HUB_PRIVATE_KEY", nil
 	}
 
-	return "", "", errors.New("no signing key: pass --key <name>, set NERVES_HUB_PRIVATE_KEY, or pass --skip-signing to upload the firmware as is")
+	return nil, "", errors.New("no signing key: pass --key <name> or --key-file <path>, set NERVES_HUB_PRIVATE_KEY, " +
+		"or pass --skip-signing to upload the firmware as is")
 }
 
 // resolveSigningKey loads and decrypts the named signing key for org from the
-// data directory, returning the base64 form fwup expects. The passphrase comes
-// from --password when set; otherwise an empty passphrase is tried first, then
-// an interactive prompt when possible.
-func resolveSigningKey(cmd *cobra.Command, cfg *config.Config, org, name string) (string, error) {
+// data directory.
+func resolveSigningKey(cmd *cobra.Command, cfg *config.Config, org, name string) (ed25519.PrivateKey, error) {
 	if err := validKeyName(name); err != nil {
-		return "", err
+		return nil, err
 	}
 	privPath := filepath.Join(cfg.DataDir, "keys", org, name+".priv")
 	blob, err := os.ReadFile(privPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return "", fmt.Errorf("signing key %q not found at %s (create one with `nh key create %s`)", name, privPath, name)
+			return nil, fmt.Errorf("signing key %q not found at %s (create one with `nh key create %s`)", name, privPath, name)
 		}
-		return "", err
+		return nil, err
 	}
+	priv, err := decryptSigningKey(cmd, cfg, string(blob))
+	if err != nil {
+		return nil, fmt.Errorf("decrypting signing key %q (wrong --password?): %w", name, err)
+	}
+	return priv, nil
+}
 
+// readSigningKeyFile reads an Ed25519 private key from a file: an fwup key
+// (base64 of the 64 byte secret key, as `fwup -g` writes), a bare base64
+// 32 byte seed, or a password-protected key as `nh key create` stores it.
+func readSigningKeyFile(cmd *cobra.Command, cfg *config.Config, path string) (ed25519.PrivateKey, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("signing key file: %w", err)
+	}
+	text := strings.TrimSpace(string(raw))
+	if priv, err := pki.ParsePrivateKeyString(text); err == nil {
+		return priv, nil
+	}
+	if seed, err := base64.StdEncoding.DecodeString(text); err == nil && len(seed) == ed25519.SeedSize {
+		return ed25519.NewKeyFromSeed(seed), nil
+	}
+	priv, err := decryptSigningKey(cmd, cfg, text)
+	if err != nil {
+		return nil, fmt.Errorf("%s is not an fwup private key, and could not be decrypted as an nh key "+
+			"(wrong --password?): %w", path, err)
+	}
+	return priv, nil
+}
+
+// decryptSigningKey decrypts a password-protected private key. The passphrase
+// comes from --password when set; otherwise an empty passphrase is tried
+// first, then an interactive prompt when possible.
+func decryptSigningKey(cmd *cobra.Command, cfg *config.Config, blob string) (ed25519.PrivateKey, error) {
 	password := ""
 	passwordSet := cmd.Flags().Changed("password")
 	if passwordSet {
 		password, _ = cmd.Flags().GetString("password")
 	}
 
-	priv, err := pki.DecryptPrivateKey(string(blob), password)
+	priv, err := pki.DecryptPrivateKey(blob, password)
 	if err != nil && !passwordSet && !cfg.NonInteractive && stdinIsTerminal(cmd) {
 		// The key is likely password protected; ask once.
 		pw, perr := promptPassword(cmd, "Signing key password: ", false)
 		if perr != nil {
-			return "", perr
+			return nil, perr
 		}
-		priv, err = pki.DecryptPrivateKey(string(blob), pw)
+		priv, err = pki.DecryptPrivateKey(blob, pw)
 	}
-	if err != nil {
-		return "", fmt.Errorf("decrypting signing key %q (wrong --password?): %w", name, err)
-	}
-	return pki.PrivateKeyString(priv), nil
+	return priv, err
 }
 
 // signFirmware signs the firmware at inPath with fwup, writing the signed
@@ -399,15 +684,13 @@ func resolveSigningKey(cmd *cobra.Command, cfg *config.Config, org, name string)
 func signFirmware(ctx context.Context, inPath, privateKey string) (string, error) {
 	fwup, err := exec.LookPath(fwupBin)
 	if err != nil {
-		return "", fmt.Errorf("fwup not found: install fwup to sign firmware (%w)", err)
+		return "", fmt.Errorf("fwup not found: install fwup to sign fwup images (%w)", err)
 	}
 
-	out, err := os.CreateTemp("", "nh-signed-*.fw")
+	outPath, err := signedTempPath(firmware.Fwup)
 	if err != nil {
-		return "", fmt.Errorf("creating temporary file: %w", err)
+		return "", err
 	}
-	outPath := out.Name()
-	out.Close()
 
 	sign := exec.CommandContext(ctx, fwup, "--sign", "-i", inPath, "-o", outPath, "--private-key", privateKey)
 	var stderr bytes.Buffer

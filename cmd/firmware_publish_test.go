@@ -91,7 +91,7 @@ func nervesProject(t *testing.T, target, env string) string {
 		t.Fatal(err)
 	}
 	fw := filepath.Join(images, "app.fw")
-	if err := os.WriteFile(fw, []byte("FWDATA"), 0o644); err != nil {
+	if err := os.WriteFile(fw, []byte(fwupTestData), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("MIX_TARGET", target)
@@ -102,7 +102,7 @@ func nervesProject(t *testing.T, target, env string) string {
 func writeFW(t *testing.T) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "image.fw")
-	if err := os.WriteFile(p, []byte("FWDATA"), 0o644); err != nil {
+	if err := os.WriteFile(p, []byte(fwupTestData), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	return p
