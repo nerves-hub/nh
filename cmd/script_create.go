@@ -37,8 +37,10 @@ var scriptCreateCmd = &cobra.Command{
 	Short: "Create a support script",
 	Long: `Create a support script in a product.
 
---name and the script body (--text or --text-file) are required; --tags is
-optional.`,
+--name and the script body (--text or --text-file) are required; --tags and
+--language are optional. --language says how the device runs the body:
+"elixir" (the server's default; nerves_hub_link evaluates it) or "shell" (for
+the Linux agent). The server checks Elixir bodies for syntax errors.`,
 	Args: cobra.NoArgs,
 	RunE: runScriptCreate,
 }
@@ -71,25 +73,35 @@ func runScriptCreate(cmd *cobra.Command, _ []string) error {
 		return errors.New("a script body is required: pass --text or --text-file")
 	}
 	tags, _ := cmd.Flags().GetString("tags")
+	language, _ := cmd.Flags().GetString("language")
+	if cmd.Flags().Changed("language") && language == "" {
+		return errors.New("--language must not be empty: use elixir or shell")
+	}
 
 	client, err := newAuthedClient(cfg)
 	if err != nil {
 		return err
 	}
 
-	script, err := client.CreateSupportScript(cmd.Context(), org, product, api.SupportScriptInput{
-		Name: name,
-		Tags: tags,
-		Text: text,
-	})
+	in := api.SupportScriptInput{
+		Name:     name,
+		Text:     text,
+		Language: language,
+	}
+	if tags != "" {
+		in.Tags = &tags
+	}
+
+	script, err := client.CreateSupportScript(cmd.Context(), org, product, in)
 	if err != nil {
 		return err
 	}
 
 	w := cmd.OutOrStdout()
+	warnIfLanguageIgnored(cmd, script)
 	if cfg.Output == config.OutputJSON {
 		return printJSON(w, script)
 	}
-	fmt.Fprintf(w, "Created support script %s (id %s)\n", script.Name, script.ID)
+	fmt.Fprintf(w, "Created support script %s (id %d)\n", script.Name, script.ID)
 	return nil
 }

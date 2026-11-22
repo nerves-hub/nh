@@ -24,6 +24,7 @@ package cmd
 
 import (
 	"fmt"
+	"strconv"
 
 	"github.com/nerves-hub/nh/internal/config"
 	"github.com/spf13/cobra"
@@ -43,7 +44,10 @@ func init() {
 }
 
 func runScriptShow(cmd *cobra.Command, args []string) error {
-	id := args[0]
+	id, err := parseScriptID(args[0])
+	if err != nil {
+		return err
+	}
 
 	cfg := config.From(cmd.Context())
 	org, err := requireOrg(cfg)
@@ -76,9 +80,10 @@ func runScriptShow(cmd *cobra.Command, args []string) error {
 			fmt.Fprintf(tw, "%s\t%s\n", label, value)
 		}
 	}
-	row("ID:", script.ID)
+	row("ID:", strconv.FormatInt(script.ID, 10))
 	row("Name:", script.Name)
-	row("Tags:", script.Tags)
+	row("Language:", script.Language)
+	row("Tags:", formatScriptTags(script.Tags))
 	if script.CreatedBy != nil {
 		row("Created by:", script.CreatedBy.Name)
 	}

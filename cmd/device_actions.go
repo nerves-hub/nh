@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/nerves-hub/nh/internal/api"
 	"github.com/nerves-hub/nh/internal/config"
 	"github.com/spf13/cobra"
 )
@@ -200,15 +201,23 @@ func runDeviceRunCode(cmd *cobra.Command, args []string) error {
 var deviceScriptsCmd = &cobra.Command{
 	Use:   "scripts <identifier>",
 	Short: "List the support scripts available to a device",
-	Long:  "List the support scripts that can be run on a device.",
-	Args:  deviceIdentifierArgs,
-	RunE:  runDeviceScripts,
+	Long: `List the support scripts that can be run on a device: those of its product.
+
+--org and --product are optional. When both are set (by flag, environment,
+saved settings, or a Mix project) the device must belong to that product, as
+with other device commands. When neither is set the server finds the device by
+identifier among your organizations. Setting only one of them is an error.`,
+	Args: deviceIdentifierArgs,
+	RunE: runDeviceScripts,
 }
 
 var deviceRunScriptCmd = &cobra.Command{
 	Use:   "run-script <identifier> <name-or-id>",
 	Short: "Run a support script on a device",
-	Long:  "Run a support script on a device and print its output.",
+	Long: `Run a support script on a device and print its output.
+
+The server waits --timeout (30s by default) for the device to answer before
+giving up.`,
 	Args: exactlyTwoArgs(
 		"usage: device run-script <identifier> <name-or-id>",
 	),
@@ -216,6 +225,9 @@ var deviceRunScriptCmd = &cobra.Command{
 }
 
 func init() {
+	deviceScriptsCmd.Flags().Int("page", 0, "page number to fetch")
+	deviceScriptsCmd.Flags().Int("page-size", 0, "number of scripts per page")
+	deviceRunScriptCmd.Flags().Duration("timeout", 0, "how long the server waits for the device's output, e.g. 2m (server default 30s)")
 	deviceCmd.AddCommand(deviceScriptsCmd)
 	deviceCmd.AddCommand(deviceRunScriptCmd)
 }
@@ -224,8 +236,20 @@ func runDeviceScripts(cmd *cobra.Command, args []string) error {
 	identifier := args[0]
 
 	cfg := config.From(cmd.Context())
-	org, product, err := requireOrgProduct(cfg)
-	if err != nil {
+	page, _ := cmd.Flags().GetInt("page")
+	pageSize, _ := cmd.Flags().GetInt("page-size")
+	if page < 0 || pageSize < 0 {
+		return errors.New("--page and --page-size must not be negative")
+	}
+
+	// Both or neither: half a scope would silently be ignored.
+	org, product := resolveOrg(cfg), resolveProduct(cfg)
+	if org != "" && product == "" {
+		_, err := requireProduct(cfg)
+		return err
+	}
+	if org == "" && product != "" {
+		_, err := requireOrg(cfg)
 		return err
 	}
 
@@ -234,31 +258,41 @@ func runDeviceScripts(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	scripts, err := client.ListDeviceScripts(cmd.Context(), org, product, identifier)
+	result, err := client.ListDeviceScripts(cmd.Context(), org, product, identifier, api.ListSupportScriptsOptions{
+		Page:     page,
+		PageSize: pageSize,
+	})
 	if err != nil {
 		return err
 	}
 
 	w := cmd.OutOrStdout()
 	if cfg.Output == config.OutputJSON {
-		return printJSON(w, scripts)
+		return printJSON(w, result)
 	}
 
-	if len(scripts) == 0 {
+	if p := result.Pagination; p != nil && p.HasInfo() {
+		fmt.Fprintf(w, "Page %d of %d — %d script(s) total\n\n", p.Page, p.TotalPages, p.TotalCount)
+	}
+
+	if len(result.Scripts) == 0 {
 		fmt.Fprintf(w, "No scripts available for device %s.\n", identifier)
 		return nil
 	}
 
-	tw := newTableWriter(w)
-	fmt.Fprintln(tw, "ID\tNAME\tTAGS")
-	for _, s := range scripts {
-		fmt.Fprintf(tw, "%s\t%s\t%s\n", orDash(s.ID), orDash(s.Name), orDash(s.Tags))
-	}
-	return tw.Flush()
+	return writeScriptTable(w, result.Scripts)
 }
 
 func runDeviceRunScript(cmd *cobra.Command, args []string) error {
 	identifier, nameOrID := args[0], args[1]
+
+	timeout, _ := cmd.Flags().GetDuration("timeout")
+	if cmd.Flags().Changed("timeout") && timeout <= 0 {
+		return errors.New("--timeout must be positive, e.g. 2m")
+	}
+	if timeout > api.MaxScriptTimeout {
+		return fmt.Errorf("--timeout must be at most %v, the longest the server can wait", api.MaxScriptTimeout)
+	}
 
 	cfg := config.From(cmd.Context())
 	org, product, err := requireOrgProduct(cfg)
@@ -271,7 +305,7 @@ func runDeviceRunScript(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	output, err := client.SendDeviceScript(cmd.Context(), org, product, identifier, nameOrID)
+	output, err := client.SendDeviceScript(cmd.Context(), org, product, identifier, nameOrID, timeout)
 	if err != nil {
 		return err
 	}

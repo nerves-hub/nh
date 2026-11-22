@@ -201,7 +201,12 @@ variable — see [Configuration](#configuration)):
   `--list-keys` lists the metric names in the fetched reports, and
   `-f`/`--follow` tails new readings by polling (`--interval`)
 - `run-code <identifier> <code>` — run Elixir code on a device
-- `scripts <identifier>`, `run-script <identifier> <name-or-id>` — support scripts
+- `scripts <identifier>` — list the support scripts a device can run (`--page`,
+  `--page-size`); `--org`/`--product` are optional (set both or neither), and when
+  set the device must belong to that product
+- `run-script <identifier> <name-or-id>` — run a support script and print its
+  output; `--timeout` (e.g. `2m`, server default 30s) is how long the server waits
+  for the device
 - `network-identities <identifier>` — list the keys a device reports holding on
   other networks (iroh/NetBird/Tailscale/WireGuard); `--service`/`--instance` filters
 - `certificates` — manage a device's certificates
@@ -270,8 +275,11 @@ no sign-in needed); `--timeout` sets how long to wait
 - `register <identifier>` — register an endpoint id; `--instance`, `--user-email`, `--detail key=value`
 - `show <identifier>`, `delete <identifier>`
 
-**`nh script`** — manage support scripts
+**`nh script`** — manage support scripts (ids are the integers `list` shows)
 - `list`, `show <id>`, `create`, `update <id>`, `delete <id>`
+- `create`/`update` take `--name`, `--text` or `--text-file`, `--tags` (comma-separated;
+  `--tags ""` on update clears them) and `--language elixir|shell` (how the device
+  runs the body; the server defaults to `elixir`)
 
 **`nh config`** — view and change persisted CLI defaults (see below)
 
