@@ -34,7 +34,8 @@ import (
 
 // CLISessionStatus is returned when polling a CLI session. Status is "waiting"
 // until the user enters the code in the browser and confirms, then "ready"
-// with UserToken set.
+// with UserToken set. Newer servers answer "collected" once the token has
+// been handed out.
 type CLISessionStatus struct {
 	Status    string `json:"status"`
 	UserToken string `json:"user_token"`
@@ -180,11 +181,17 @@ func (c *Client) WaitForCLISession(ctx context.Context, token string, opts CLIPo
 		switch {
 		case err == nil:
 			backoff, transient, lastErr = opts.MinBackoff, 0, nil
-			if status.Status == "ready" {
+			switch status.Status {
+			case "ready":
 				if status.UserToken == "" {
 					return "", errors.New("login confirmed but no token was returned")
 				}
 				return status.UserToken, nil
+			case "collected":
+				// Newer servers hand the token out once and answer later polls
+				// with "collected" (nerves-hub/nerves_hub_web#3336). The answer
+				// that carried it never arrived, so this login can't finish.
+				return "", fmt.Errorf("%w: the server already handed out this login's token, but nh never received it", ErrCLISessionExpired)
 			}
 
 		case ctx.Err() != nil:

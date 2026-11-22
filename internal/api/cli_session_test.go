@@ -195,6 +195,19 @@ func TestWaitForCLISessionExpired(t *testing.T) {
 	}
 }
 
+func TestWaitForCLISessionCollected(t *testing.T) {
+	c, polls := pollServer(t, func(w http.ResponseWriter, _ int) {
+		_, _ = w.Write([]byte(`{"data":{"status":"collected"}}`))
+	})
+	_, err := c.WaitForCLISession(context.Background(), "sess-tok", fastPoll)
+	if !errors.Is(err, ErrCLISessionExpired) || !strings.Contains(err.Error(), "already handed out") {
+		t.Errorf("want an expiry saying the token was collected, got %v", err)
+	}
+	if polls.Load() != 1 {
+		t.Errorf("polls: want 1, got %d", polls.Load())
+	}
+}
+
 func TestWaitForCLISessionStopsOnClientError(t *testing.T) {
 	c, polls := pollServer(t, func(w http.ResponseWriter, _ int) {
 		w.WriteHeader(http.StatusBadRequest)
