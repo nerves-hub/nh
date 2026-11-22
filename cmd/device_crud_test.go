@@ -16,7 +16,7 @@ func TestDeviceCreate(t *testing.T) {
 		_ = json.NewDecoder(r.Body).Decode(&gotBody)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{"data":{"identifier":"dev-001","connection_status":"offline","tags":["prod","eu"],"update_mode":"automatic"}}`))
+		_, _ = w.Write([]byte(`{"data":{"identifier":"dev-001","connection_status":"offline","description":"edge unit","tags":["prod","eu"],"update_mode":"automatic"}}`))
 	}))
 	defer srv.Close()
 
@@ -197,6 +197,101 @@ func TestDeviceCreateFailsWhenServerIgnoresTags(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "created device dev-001, but the server didn't apply --tag") ||
 		!strings.Contains(err.Error(), "v2.5.3") {
 		t.Errorf("want an unapplied --tag error, got %v", err)
+	}
+}
+
+// The device exists even when a field wasn't applied, so it is still printed.
+func TestDeviceCreatePrintsDeviceWhenAFieldIsNotApplied(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"data":{"identifier":"dev-001","connection_status":"offline","tags":[]}}`))
+	}))
+	defer srv.Close()
+
+	out, err := execCmd(t, "",
+		"device", "create", "dev-001", "--tag", "prod", "-o", "json",
+		"--org", "acme", "--product", "thermostat",
+		"--uri", srv.URL, "--token", "tok",
+	)
+	if err == nil {
+		t.Fatal("want an unapplied --tag error")
+	}
+	if !strings.Contains(out, `"identifier": "dev-001"`) {
+		t.Errorf("the created device should be printed as JSON, got %q", out)
+	}
+}
+
+func TestDeviceUpdateFailsWhenServerIgnoresDescription(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"data":{"identifier":"dev-001","connection_status":"online","description":"old"}}`))
+	}))
+	defer srv.Close()
+
+	out, err := execCmd(t, "",
+		"device", "update", "dev-001", "--description", "edge unit",
+		"--org", "acme", "--product", "thermostat",
+		"--uri", srv.URL, "--token", "tok",
+	)
+	if err == nil || !strings.Contains(err.Error(), `didn't apply --description (sent "edge unit", device has "old")`) {
+		t.Errorf("want an unapplied --description error, got %v", err)
+	}
+	if !strings.Contains(out, "Updated device dev-001") {
+		t.Errorf("the device should still be printed, got %q", out)
+	}
+}
+
+func TestDeviceUpdateFailsWhenServerIgnoresDeploymentGroup(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"data":{"identifier":"dev-001","connection_status":"online","deployment_group":null}}`))
+	}))
+	defer srv.Close()
+
+	_, err := execCmd(t, "",
+		"device", "update", "dev-001", "--deployment-group-id", "7",
+		"--org", "acme", "--product", "thermostat",
+		"--uri", srv.URL, "--token", "tok",
+	)
+	if err == nil || !strings.Contains(err.Error(), "didn't apply --deployment-group-id (sent 7, device has no deployment group)") {
+		t.Errorf("want an unapplied --deployment-group-id error, got %v", err)
+	}
+}
+
+// NervesHub splits a tags string on commas, so --tag a,b sets two tags.
+func TestDeviceUpdateTagWithComma(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"identifier":"dev-001","connection_status":"online","tags":["prod","eu"]}}`))
+	}))
+	defer srv.Close()
+
+	_, err := execCmd(t, "",
+		"device", "update", "dev-001", "--tag", "prod, eu",
+		"--org", "acme", "--product", "thermostat",
+		"--uri", srv.URL, "--token", "tok",
+	)
+	if err != nil {
+		t.Fatalf("a comma-separated --tag should count as applied, got %v", err)
+	}
+	if dev, _ := gotBody["device"].(map[string]any); dev["tags"] != "prod,eu" {
+		t.Errorf("tags should be sent as prod,eu, got %+v", gotBody)
+	}
+}
+
+func TestDeviceUpdateEmptyTag(t *testing.T) {
+	_, err := execCmd(t, "",
+		"device", "update", "dev-001", "--tag", " , ",
+		"--org", "acme", "--product", "thermostat",
+		"--token", "tok", "--uri", "https://example.com",
+	)
+	if err == nil || !strings.Contains(err.Error(), "--tag needs a tag name") {
+		t.Errorf("want a --tag needs a tag name error, got %v", err)
 	}
 }
 

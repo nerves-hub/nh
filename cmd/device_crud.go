@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/nerves-hub/nh/internal/api"
@@ -33,10 +34,15 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// updateModeHelp explains --update-mode for the create and update help text.
-const updateModeHelp = `--update-mode is off, automatic or device_managed. Setting it, or --tag,
-needs NervesHub v2.5.3 or later: older servers don't apply them, and nh
-reports an error when the device comes back without them.`
+// updateModeHelp explains --update-mode and the server version the device
+// write flags need, for the create and update help text.
+const updateModeHelp = `--update-mode is off, automatic or device_managed. --tag takes one tag or
+a comma-separated list.
+
+These fields need NervesHub v2.5.3 or later: older servers don't apply them.
+nh reports an error when the device comes back without the update mode, tags
+or description you set, or with no deployment group after
+--deployment-group-id.`
 
 // ── create ──────────────────────────────────────────────────────────────────
 
@@ -85,7 +91,11 @@ func deviceInputFromFlags(cmd *cobra.Command) (api.DeviceInput, bool, error) {
 		changed = true
 	}
 	if cmd.Flags().Changed("tag") {
-		in.Tags, _ = cmd.Flags().GetStringArray("tag")
+		raw, _ := cmd.Flags().GetStringArray("tag")
+		in.Tags = splitTags(raw)
+		if len(in.Tags) == 0 {
+			return in, changed, errors.New("--tag needs a tag name: nh can't clear a device's tags")
+		}
 		changed = true
 	}
 	if cmd.Flags().Changed("update-mode") {
@@ -105,34 +115,48 @@ func deviceInputFromFlags(cmd *cobra.Command) (api.DeviceInput, bool, error) {
 }
 
 // checkApplied reports an error when the device a create or update returned
-// doesn't have the update mode or tags that were sent. NervesHub before
-// v2.5.3 reads those only from the top level of the body, so it answers the
-// nested body nh sends with success but leaves them unchanged.
+// doesn't have the fields that were sent. NervesHub before v2.5.3 reads device
+// fields only from the top level of the body, so it answers the nested body nh
+// sends with success but leaves them unchanged. The response names a device's
+// deployment group but not its ID, so --deployment-group-id is only checked
+// for a group being set at all.
 func checkApplied(in api.DeviceInput, device *api.Device) error {
 	const hint = "the server didn't apply %s (sent %s, device has %s): nh needs NervesHub v2.5.3 or later"
 	if in.UpdateMode != "" && device.UpdateMode != in.UpdateMode {
 		return fmt.Errorf(hint, "--update-mode", in.UpdateMode, orDash(device.UpdateMode))
 	}
-	if len(in.Tags) > 0 && !sameTags(in.Tags, device.Tags) {
+	if len(in.Tags) > 0 && !slices.Equal(tagSet(in.Tags), tagSet(device.Tags)) {
 		return fmt.Errorf(hint, "--tag", strings.Join(in.Tags, ","), orDash(strings.Join(device.Tags, ",")))
+	}
+	if in.Description != "" && device.Description != in.Description {
+		return fmt.Errorf(hint, "--description", strconv.Quote(in.Description), strconv.Quote(device.Description))
+	}
+	if in.DeploymentGroupID != nil && device.DeploymentGroup == nil {
+		return fmt.Errorf(hint, "--deployment-group-id", strconv.Itoa(*in.DeploymentGroupID), "no deployment group")
 	}
 	return nil
 }
 
-// sameTags reports whether two tag lists hold the same tags, ignoring order,
-// duplicates and surrounding whitespace.
-func sameTags(a, b []string) bool {
-	set := func(tags []string) []string {
-		out := make([]string, 0, len(tags))
-		for _, t := range tags {
+// splitTags reads --tag values the way NervesHub reads a tags string: each is
+// split on commas and trimmed, and empty entries are dropped.
+func splitTags(values []string) []string {
+	var tags []string
+	for _, v := range values {
+		for _, t := range strings.Split(v, ",") {
 			if t = strings.TrimSpace(t); t != "" {
-				out = append(out, t)
+				tags = append(tags, t)
 			}
 		}
-		slices.Sort(out)
-		return slices.Compact(out)
 	}
-	return slices.Equal(set(a), set(b))
+	return tags
+}
+
+// tagSet returns tags sorted and without duplicates, so two lists that hold
+// the same tags compare equal.
+func tagSet(tags []string) []string {
+	out := splitTags(tags)
+	slices.Sort(out)
+	return slices.Compact(out)
 }
 
 func runDeviceCreate(cmd *cobra.Command, args []string) error {
@@ -158,16 +182,16 @@ func runDeviceCreate(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+
+	// The device exists even when a field wasn't applied, so show it before
+	// reporting that.
+	if err := showWrittenDevice(cmd, cfg, device, fmt.Sprintf("Created device %s in %s/%s", device.Identifier, org, product)); err != nil {
+		return err
+	}
 	if err := checkApplied(in, device); err != nil {
 		return fmt.Errorf("created device %s, but %w", identifier, err)
 	}
-
-	w := cmd.OutOrStdout()
-	if cfg.Output == config.OutputJSON {
-		return printJSON(w, device)
-	}
-	fmt.Fprintf(w, "Created device %s in %s/%s\n", device.Identifier, org, product)
-	return renderDevice(w, device)
+	return nil
 }
 
 func runDeviceUpdate(cmd *cobra.Command, args []string) error {
@@ -196,15 +220,24 @@ func runDeviceUpdate(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+
+	if err := showWrittenDevice(cmd, cfg, device, "Updated device "+device.Identifier); err != nil {
+		return err
+	}
 	if err := checkApplied(in, device); err != nil {
 		return fmt.Errorf("updated device %s, but %w", identifier, err)
 	}
+	return nil
+}
 
+// showWrittenDevice prints the device a create or update returned: as JSON,
+// or as a headline followed by its details.
+func showWrittenDevice(cmd *cobra.Command, cfg *config.Config, device *api.Device, headline string) error {
 	w := cmd.OutOrStdout()
 	if cfg.Output == config.OutputJSON {
 		return printJSON(w, device)
 	}
-	fmt.Fprintf(w, "Updated device %s\n", device.Identifier)
+	fmt.Fprintln(w, headline)
 	return renderDevice(w, device)
 }
 

@@ -234,8 +234,8 @@ func (in DeviceInput) body(identifier string) deviceBody {
 
 // deviceWriteBody is the request body of a device create or update, with
 // every field under "device". NervesHub v2.5.3 and later read only that
-// object; older servers read update_mode and tags only from the top level and
-// leave them unchanged.
+// object; older servers read device fields only from the top level, so they
+// leave every field nh sends unchanged.
 type deviceWriteBody struct {
 	Device deviceBody `json:"device"`
 }

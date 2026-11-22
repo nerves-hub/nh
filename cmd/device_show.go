@@ -93,7 +93,8 @@ func renderDevice(w io.Writer, device *api.Device) error {
 	if device.Description != "" {
 		row("Description:", device.Description)
 	}
-	// Servers that send update_mode no longer keep updates_enabled current.
+	// update_mode says more than updates_enabled (which is just update_mode
+	// != off), so show it when the server sends it.
 	if device.UpdateMode != "" {
 		row("Update mode:", device.UpdateMode)
 	} else {
