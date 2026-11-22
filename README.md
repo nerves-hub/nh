@@ -51,6 +51,8 @@ Check your install with `nh --version`.
 Signing and uploading firmware shells out to [`fwup`](https://github.com/fwup-home/fwup),
 which must be on your `PATH`. It is not needed for any other command, or when
 uploading firmware with `--skip-signing`.
+`nh archive upload` also uses it to check an archive's metadata; with
+`--skip-signing` and no `fwup`, it warns and leaves that check to the server.
 
 ## Getting started
 
@@ -171,6 +173,13 @@ variable — see [Configuration](#configuration)):
   built image is detected. `--deploy <group>` (repeatable) points deployment groups
   at the new firmware once the upload succeeds
 
+**`nh archive`** — manage archives (supporting fwup files a deployment group
+release can deliver to devices)
+- `list`, `show <uuid>`, `download <uuid>` (`--file <path>`, or `--file -` for stdout)
+- `upload <path>` — check the archive's metadata (its `meta-version` must be
+  SemVer), sign it (via `fwup`), and upload it (`--key`, `--password`,
+  `--skip-signing`). The API has no archive delete
+
 **`nh deployment`** — manage deployment groups
 - `list`, `show <name>`, `create <name>`, `update <name>`, `delete <name>`
 
@@ -248,7 +257,7 @@ Every variable is read with the `NERVES_HUB_` prefix and, equivalently, the
 | `NERVES_HUB_PRODUCT` | Default product scope | saved settings |
 | `NERVES_HUB_DATA_DIR` | Directory for local state (settings, keys) | `~/.nh` |
 | `NERVES_HUB_NON_INTERACTIVE` | Disable all prompts; missing input is an error (useful in CI) | `false` |
-| `NERVES_HUB_PRIVATE_KEY` | Unencrypted base64 signing key for `firmware upload` (alternative to `--key`) | — |
+| `NERVES_HUB_PRIVATE_KEY` | Unencrypted base64 signing key for `firmware upload` and `archive upload` (alternative to `--key`) | — |
 | `NERVES_HUB_DEPLOYMENT_NAME` | Deployment group `firmware upload` updates when `--deploy` is not given | — |
 
 Boolean variables accept `1`, `true`, `yes`, `y`, or `on` (case-insensitive).
@@ -292,6 +301,7 @@ behavior in `internal/`:
 - `internal/pki/` — X.509 certificate and Ed25519 signing-key handling
 - `internal/phoenix/` — Phoenix Channels client (device console / shell)
 - `internal/mix/` — Mix / Nerves project integration helpers
+- `internal/semver/` — Semantic Versioning 2.0.0 checks (archive versions)
 
 ## Contributing
 
