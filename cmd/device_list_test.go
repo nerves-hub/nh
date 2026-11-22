@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/nerves-hub/nh/internal/api"
 )
 
 const devicesResponse = `{"data":[
@@ -224,15 +226,15 @@ func TestDeviceListFilters(t *testing.T) {
 }
 
 // queryServer answers like NervesHub v2.5.0+: the probe nh sends to check
-// advanced query support ("(") gets a 422 parse error, and any other request
-// gets the device list from devices. It records the last non-probe query.
+// advanced query support gets a 422 parse error, and any other request gets
+// the device list from devices. It records the last non-probe query.
 func queryServer(t *testing.T, devices string, got *url.Values) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		if r.URL.Query().Get("filters[advanced_query]") == "(" {
+		if r.URL.Query().Get("filters[advanced_query]") == api.AdvancedQueryProbe {
 			w.WriteHeader(http.StatusUnprocessableEntity)
-			_, _ = w.Write([]byte(`{"errors":{"detail":"invalid advanced query: unexpected end of input (at character 1)"}}`))
+			_, _ = w.Write([]byte(`{"errors":{"detail":"invalid advanced query: \"nh_support_probe\" is not a valid column (at character 0)"}}`))
 			return
 		}
 		*got = r.URL.Query()
@@ -325,6 +327,58 @@ func TestDeviceListQueryRefusedOnOldServers(t *testing.T) {
 	}
 }
 
+// A proxy error says nothing about the server's version, so it is reported
+// as it is rather than as an old server.
+func TestDeviceListQueryProbeGatewayError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	_, err := execCmd(t, "",
+		"device", "list",
+		"--org", "acme", "--product", "thermostat",
+		"--query", `health_status = "unhealthy"`,
+		"--uri", srv.URL, "--token", "tok",
+	)
+	if err == nil || strings.Contains(err.Error(), "v2.5.0") || !strings.Contains(err.Error(), "503") {
+		t.Errorf("want the 503 reported as is, got %v", err)
+	}
+}
+
+// A server that passed the check isn't checked again within a day, from the
+// same data directory.
+func TestDeviceListQueryCheckIsRemembered(t *testing.T) {
+	probes := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("filters[advanced_query]") == api.AdvancedQueryProbe {
+			probes++
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = w.Write([]byte(`{"errors":{"detail":"invalid advanced query"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	defer srv.Close()
+
+	dataDir := t.TempDir()
+	for range 2 {
+		_, err := execCmd(t, "",
+			"device", "list",
+			"--org", "acme", "--product", "thermostat",
+			"--query", "metric:cpu_temp > 70",
+			"--uri", srv.URL, "--token", "tok", "--data-dir", dataDir,
+		)
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+	}
+	if probes != 1 {
+		t.Errorf("want one support check across two lists, got %d", probes)
+	}
+}
+
 func TestDeviceListQueryConflictsWithAdvancedQueryFilter(t *testing.T) {
 	_, err := execCmd(t, "",
 		"device", "list",
@@ -339,9 +393,16 @@ func TestDeviceListQueryConflictsWithAdvancedQueryFilter(t *testing.T) {
 }
 
 func TestDeviceListInvalidQueryShowsServerError(t *testing.T) {
+	var sent []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query().Get("filters[advanced_query]")
+		sent = append(sent, q)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnprocessableEntity)
+		if q == api.AdvancedQueryProbe {
+			_, _ = w.Write([]byte(`{"errors":{"detail":"invalid advanced query: probe rejected"}}`))
+			return
+		}
 		_, _ = w.Write([]byte(`{"errors":{"detail":"invalid advanced query: \"bogus\" is not a valid column (at character 0)"}}`))
 	}))
 	defer srv.Close()
@@ -353,7 +414,10 @@ func TestDeviceListInvalidQueryShowsServerError(t *testing.T) {
 		"--uri", srv.URL, "--token", "tok",
 	)
 	if err == nil || !strings.Contains(err.Error(), "not a valid column") {
-		t.Errorf("expected the server's parse error to surface, got %v", err)
+		t.Errorf("expected the server's parse error for the query to surface, got %v", err)
+	}
+	if len(sent) != 2 || sent[0] != api.AdvancedQueryProbe || sent[1] != `bogus = "x"` {
+		t.Errorf("want the probe and then the query, got %q", sent)
 	}
 }
 

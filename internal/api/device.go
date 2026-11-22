@@ -25,6 +25,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -144,30 +145,34 @@ func (c *Client) ListDevices(ctx context.Context, org, product string, opts List
 	return &result, nil
 }
 
-// advancedQueryProbe is a query expression no NervesHub can parse: an opening
-// parenthesis is always read as an attempted expression, never as free text.
-const advancedQueryProbe = "("
+// AdvancedQueryProbe is the query SupportsAdvancedQuery sends. It names a
+// column no NervesHub has and compares it with a quoted value, so a server
+// that knows the advanced query can only reject it as a parse error: input
+// with an operator and a quote is never taken as free text.
+const AdvancedQueryProbe = `nh_support_probe = "x"`
 
 // SupportsAdvancedQuery reports whether the server applies
 // filters[advanced_query] to the device list. NervesHub v2.5.0 and later
-// answer an unparseable query with 422. Older servers either drop the
-// unknown filter, answering with every device, or fail on it with a 5xx.
-// It costs one request for a single device.
+// answer the unparseable AdvancedQueryProbe with 422. Older servers either
+// drop the unknown filter, answering with every device, or fail on it with a
+// 500. Other errors, including 502, 503 and 504 from a proxy, are returned,
+// since they say nothing about the server's version. It costs one request
+// for a single device.
 func (c *Client) SupportsAdvancedQuery(ctx context.Context, org, product string) (bool, error) {
-	_, err := c.ListDevices(ctx, org, product, ListDevicesOptions{PageSize: 1, Query: advancedQueryProbe})
+	_, err := c.ListDevices(ctx, org, product, ListDevicesOptions{PageSize: 1, Query: AdvancedQueryProbe})
 	if err == nil {
 		return false, nil
 	}
 	var apiErr *APIError
 	if errors.As(err, &apiErr) {
-		switch {
-		case apiErr.StatusCode == http.StatusUnprocessableEntity:
+		switch apiErr.StatusCode {
+		case http.StatusUnprocessableEntity:
 			return true, nil
-		case apiErr.StatusCode >= 500:
+		case http.StatusInternalServerError:
 			return false, nil
 		}
 	}
-	return false, err
+	return false, fmt.Errorf("checking advanced query support: %w", err)
 }
 
 // GetDevice returns a single device by identifier via

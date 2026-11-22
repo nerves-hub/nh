@@ -52,7 +52,9 @@ e.g. --filter connection:not_seen --filter tag:prod. Filters are passed
 through to the API as-is, so any server-supported filter works.
 
 Use --query for the advanced query language from the web UI's search bar.
-Values are quoted; comparisons combine with and/or/not and parentheses.
+Values are quoted strings, except metric:<key> values, which are bare
+numbers (metric:cpu_temp > 70). Comparisons combine with and/or/not and
+parentheses.
 Each column takes its own operators:
 
   like, not like          identifier, search (SQL LIKE patterns, e.g. "%kit%")
@@ -72,7 +74,8 @@ is rejected by the server with the parse error. --query combines with any
 --filter flags (results must match both).
 
 --query needs NervesHub v2.5.0 or later. Older servers ignore it and would
-list every device, so nh checks first (one extra request) and refuses.`,
+list every device, so nh checks first and refuses. The check is one extra
+request, and a server that passes it isn't checked again for a day.`,
 	Example: `  # Devices whose latest cpu_temp reading is over 70
   nh device list --query 'metric:cpu_temp > 70'
 
@@ -191,12 +194,8 @@ func runDeviceList(cmd *cobra.Command, _ []string) error {
 	// A server that doesn't know the advanced query would answer with every
 	// device, as if they all matched.
 	if advancedQuery != "" || filters["advanced_query"] != "" {
-		supported, err := client.SupportsAdvancedQuery(cmd.Context(), org, product)
-		if err != nil {
+		if err := requireAdvancedQuery(cmd.Context(), cfg, client, org, product); err != nil {
 			return err
-		}
-		if !supported {
-			return errors.New("this NervesHub server doesn't support advanced queries (it needs v2.5.0 or later), so it would ignore the query and list every device")
 		}
 	}
 
