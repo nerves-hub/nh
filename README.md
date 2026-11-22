@@ -144,7 +144,12 @@ variable — see [Configuration](#configuration)):
   nh device list --query 'metric:battery_soc < 20 and updates = "enabled"'
   ```
 - `show <identifier>` — show details for a device
-- `create <identifier>`, `update <identifier>`, `delete <identifier>`
+- `create <identifier>`, `update <identifier>` — set `--description`, `--tag`
+  (repeatable), `--update-mode off|automatic|device_managed`,
+  `--managed-updates-allowed` and `--connecting-code` (needs NervesHub v2.5.3 or
+  later). The API can't set a device's deployment group: NervesHub assigns one
+  whose version and tag conditions the device matches when it connects
+- `delete <identifier>`
 - `upgrade <identifier> <firmware-uuid>` — upgrade a device to a firmware
 - `move <identifier>` — move a device to another product
 - `reboot <identifier>`, `reconnect <identifier>`

@@ -10,14 +10,37 @@ import (
 const deviceResponse = `{"data":{
 	"identifier":"dev-001",
 	"connection_status":"connected",
-	"online":"online",
+	"online":"connected",
 	"version":"1.2.3",
 	"tags":["prod","eu"],
 	"description":"front door unit",
 	"updates_enabled":true,
 	"last_communication":"never",
 	"firmware_metadata":{"uuid":"abc-123","version":"1.2.3"},
-	"deployment_group":{"name":"stable"}
+	"update_mode":"automatic",
+	"managed_updates_allowed":true,
+	"updates_blocked_until":"2026-01-01T00:00:00Z",
+	"deleted":false,
+	"deployment_group":{"name":"stable","firmware_version":"1.2.3","is_active":true}
+}}`
+
+// neverSeenDeviceResponse is a device that has never connected and was
+// deleted, as NervesHubWeb.API.DeviceJSON renders it.
+const neverSeenDeviceResponse = `{"data":{
+	"identifier":"dev-002",
+	"connection_status":"not_seen",
+	"online":"not_seen",
+	"version":"unknown",
+	"tags":null,
+	"description":null,
+	"updates_enabled":false,
+	"update_mode":"off",
+	"managed_updates_allowed":false,
+	"updates_blocked_until":"2099-01-02T10:00:00Z",
+	"last_communication":"never",
+	"firmware_metadata":null,
+	"deployment_group":{"name":"canary","firmware_version":"2.0.0","is_active":false},
+	"deleted":true
 }}`
 
 func TestDeviceShow(t *testing.T) {
@@ -41,10 +64,45 @@ func TestDeviceShow(t *testing.T) {
 	if gotPath != "/api/orgs/acme/products/thermostat/devices/dev-001" {
 		t.Errorf("path: got %q", gotPath)
 	}
-	for _, want := range []string{"Identifier:", "dev-001", "Status:", "connected", "1.2.3", "prod, eu", "stable", "never"} {
+	for _, want := range []string{"Identifier:", "dev-001", "Status:", "connected", "1.2.3", "prod, eu",
+		"stable (firmware 1.2.3)", "never", "Update mode:", "automatic", "Managed updates allowed:", "true"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("detail output missing %q, got:\n%s", want, out)
 		}
+	}
+	// online repeats connection_status, so it isn't shown twice, and a
+	// penalty box that has passed isn't shown.
+	for _, unwanted := range []string{"Online:", "Deleted:", "inactive", "Updates blocked until:"} {
+		if strings.Contains(out, unwanted) {
+			t.Errorf("detail output shouldn't have %q, got:\n%s", unwanted, out)
+		}
+	}
+}
+
+func TestDeviceShowNeverSeenDeletedDevice(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(neverSeenDeviceResponse))
+	}))
+	defer srv.Close()
+
+	out, err := execCmd(t, "",
+		"device", "show", "dev-002",
+		"--org", "acme", "--product", "thermostat",
+		"--uri", srv.URL, "--token", "tok",
+	)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	for _, want := range []string{"Deleted:", "never connected", "Update mode:", "off",
+		"Managed updates allowed:", "false", "Updates blocked until:", "2099-01-02 10:00:00 UTC",
+		"canary (firmware 2.0.0), inactive"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("detail output missing %q, got:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "not_seen") {
+		t.Errorf("not_seen should be spelled out, got:\n%s", out)
 	}
 }
 
