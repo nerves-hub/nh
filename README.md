@@ -48,9 +48,15 @@ Check your install with `nh --version`.
 
 ### Runtime dependency
 
-Signing and uploading firmware shells out to [`fwup`](https://github.com/fwup-home/fwup),
-which must be on your `PATH`. It is not needed for any other command, or when
-uploading firmware with `--skip-signing`.
+Signing and uploading an fwup (`.fw`) image shells out to
+[`fwup`](https://github.com/fwup-home/fwup), which must be on your `PATH`. It is
+not needed for other firmware formats, for any other command, or when uploading
+with `--skip-signing`.
+
+Signing an ESP-IDF image shells out to `espsecure.py` (or `espsecure`) from
+[esptool](https://github.com/espressif/esptool) (`pip install esptool`). AtomVM
+packbeams are signed by `nh` itself, and RAUC bundles are signed when they are
+built, so neither needs anything extra.
 
 ## Getting started
 
@@ -166,10 +172,25 @@ variable — see [Configuration](#configuration)):
 
 **`nh firmware`** — manage firmware
 - `list`, `show <uuid>`, `download <uuid>`, `delete <uuid>`
-- `upload [path]` (alias `publish`) — sign (via `fwup`) and upload a firmware file
+- `upload [path]` (alias `publish`) — sign and upload a firmware file
   (`--skip-signing` to skip). Inside a Nerves project the path is optional and the
   built image is detected. `--deploy <group>` (repeatable) points deployment groups
-  at the new firmware once the upload succeeds
+  at the new firmware once the upload succeeds. The format is detected from the
+  file's contents, the image's own metadata is previewed, and an image built for
+  another product is refused:
+
+  | Format | File | Preview read from | Signed with |
+  |---|---|---|---|
+  | `fwup` | `.fw` | `fwup -m` | `fwup --sign`, Ed25519 key from `--key <name>`, `--key-file` or `NERVES_HUB_PRIVATE_KEY` |
+  | `atomvm` | `.avm` | the packbeam's `application.bin` | `nh` itself, with the same Ed25519 keys as fwup (an existing signature is replaced) |
+  | `esp-idf` | `.bin` | the image header and app descriptor | `espsecure.py sign_data --version 2`, RSA-3072 key from `--key <name>` (`<data-dir>/keys/<org>/<name>.rsa.pem`) or `--key-file <pem>`; an already signed image is uploaded as is |
+  | `rauc` | `.raucb` | the manifest's `[update]` and `[meta.nerveshub]` | nothing: bundles are signed when built and uploaded as is |
+
+  A product takes only the formats in its `allowed_update_tools` (`fwup` by
+  default), and may accept unsigned ESP-IDF or AtomVM images with
+  `allow_unsigned_esp_idf_firmware` / `allow_unsigned_atomvm_firmware`; both are
+  set with `nh product update`. `list` and `show` report each firmware's format
+  (`tool`), and `show` its size
 
 **`nh deployment`** — manage deployment groups
 - `list`, `show <name>`, `create <name>`, `update <name>`, `delete <name>`
@@ -248,7 +269,7 @@ Every variable is read with the `NERVES_HUB_` prefix and, equivalently, the
 | `NERVES_HUB_PRODUCT` | Default product scope | saved settings |
 | `NERVES_HUB_DATA_DIR` | Directory for local state (settings, keys) | `~/.nh` |
 | `NERVES_HUB_NON_INTERACTIVE` | Disable all prompts; missing input is an error (useful in CI) | `false` |
-| `NERVES_HUB_PRIVATE_KEY` | Unencrypted base64 signing key for `firmware upload` (alternative to `--key`) | — |
+| `NERVES_HUB_PRIVATE_KEY` | Unencrypted base64 Ed25519 signing key for `firmware upload` of fwup and AtomVM images (alternative to `--key`) | — |
 | `NERVES_HUB_DEPLOYMENT_NAME` | Deployment group `firmware upload` updates when `--deploy` is not given | — |
 
 Boolean variables accept `1`, `true`, `yes`, `y`, or `on` (case-insensitive).

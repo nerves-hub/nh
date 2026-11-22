@@ -78,10 +78,10 @@ func runFirmwareList(cmd *cobra.Command, _ []string) error {
 	}
 
 	tw := newTableWriter(w)
-	fmt.Fprintln(tw, "VERSION\tPLATFORM\tARCHITECTURE\tUUID")
+	fmt.Fprintln(tw, "VERSION\tFORMAT\tPLATFORM\tARCHITECTURE\tUUID")
 	for _, f := range firmwares {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n",
-			orDash(f.Version), orDash(f.Platform), orDash(f.Architecture), f.UUID)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
+			orDash(f.Version), orDash(f.Tool), orDash(f.Platform), orDash(f.Architecture), f.UUID)
 	}
 	return tw.Flush()
 }

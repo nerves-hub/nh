@@ -83,14 +83,32 @@ func runFirmwareShow(cmd *cobra.Command, args []string) error {
 	row("Version:", firmware.Version)
 	row("Platform:", firmware.Platform)
 	row("Architecture:", firmware.Architecture)
+	row("Format:", firmware.Tool)
+	if firmware.Size > 0 {
+		row("Size:", formatBytes(firmware.Size))
+	}
 	row("Author:", firmware.Author)
 	row("Description:", firmware.Description)
 	row("Product:", firmware.Product)
 	row("VCS identifier:", firmware.VCSIdentifier)
-	row("fwup version:", firmware.FwupVersion)
 	row("Misc:", firmware.Misc)
 	if !firmware.InsertedAt.IsZero() {
 		row("Created:", firmware.InsertedAt.Format("2006-01-02 15:04:05 MST"))
 	}
 	return tw.Flush()
+}
+
+// formatBytes renders a byte count for people, keeping the exact figure:
+// "1.4 MiB (1432112 bytes)".
+func formatBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d bytes", n)
+	}
+	div, exp := int64(unit), 0
+	for m := n / unit; m >= unit; m /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB (%d bytes)", float64(n)/float64(div), "KMGTPE"[exp], n)
 }
