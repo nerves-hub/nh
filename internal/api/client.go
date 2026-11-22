@@ -142,10 +142,11 @@ func (c *Client) Delete(ctx context.Context, path string) error {
 	return c.do(ctx, http.MethodDelete, path, nil, nil, nil)
 }
 
-// postRawText issues a no-body POST and returns the raw response body as a
-// string, for endpoints that reply with text/plain rather than JSON.
-func (c *Client) postRawText(ctx context.Context, path string) (string, error) {
-	endpoint, err := c.resolve(path, nil)
+// postRawText issues a no-body POST with optional query parameters and returns
+// the raw response body as a string, for endpoints that reply with text/plain
+// rather than JSON.
+func (c *Client) postRawText(ctx context.Context, path string, query url.Values) (string, error) {
+	endpoint, err := c.resolve(path, query)
 	if err != nil {
 		return "", err
 	}

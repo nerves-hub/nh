@@ -93,10 +93,5 @@ func runScriptList(cmd *cobra.Command, _ []string) error {
 		return nil
 	}
 
-	tw := newTableWriter(w)
-	fmt.Fprintln(tw, "ID\tNAME\tTAGS")
-	for _, s := range result.Scripts {
-		fmt.Fprintf(tw, "%s\t%s\t%s\n", s.ID, s.Name, orDash(s.Tags))
-	}
-	return tw.Flush()
+	return writeScriptTable(w, result.Scripts)
 }

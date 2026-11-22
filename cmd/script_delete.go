@@ -45,7 +45,10 @@ func init() {
 }
 
 func runScriptDelete(cmd *cobra.Command, args []string) error {
-	id := args[0]
+	id, err := parseScriptID(args[0])
+	if err != nil {
+		return err
+	}
 
 	cfg := config.From(cmd.Context())
 	org, err := requireOrg(cfg)
@@ -61,7 +64,7 @@ func runScriptDelete(cmd *cobra.Command, args []string) error {
 		if cfg.NonInteractive {
 			return errors.New("refusing to delete without confirmation; pass --yes to proceed non-interactively")
 		}
-		confirmed, err := confirm(cmd, fmt.Sprintf("Delete support script %s? [y/N]", id))
+		confirmed, err := confirm(cmd, fmt.Sprintf("Delete support script %d? [y/N]", id))
 		if err != nil {
 			return err
 		}
@@ -80,6 +83,6 @@ func runScriptDelete(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	fmt.Fprintf(cmd.OutOrStdout(), "Deleted support script %s\n", id)
+	fmt.Fprintf(cmd.OutOrStdout(), "Deleted support script %d\n", id)
 	return nil
 }

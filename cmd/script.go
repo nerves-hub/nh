@@ -24,9 +24,13 @@ package cmd
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"os"
+	"strconv"
+	"strings"
 
+	"github.com/nerves-hub/nh/internal/api"
 	"github.com/spf13/cobra"
 )
 
@@ -48,11 +52,45 @@ var scriptIDArgs = exactlyOneArg(
 	"too many arguments: provide a single support script id",
 )
 
+// parseScriptID parses a support script id argument. The server only looks up
+// positive integer ids, so anything else is refused before a request is made.
+func parseScriptID(arg string) (int64, error) {
+	id, err := strconv.ParseInt(strings.TrimSpace(arg), 10, 64)
+	if err != nil || id <= 0 {
+		return 0, fmt.Errorf("invalid support script id %q: ids are positive integers (see `nh script list`)", arg)
+	}
+	return id, nil
+}
+
+// formatScriptTags renders a script's tags the way --tags takes them.
+func formatScriptTags(tags []string) string {
+	return strings.Join(tags, ",")
+}
+
+// writeScriptTable prints scripts as an ID/NAME/LANGUAGE/TAGS table.
+func writeScriptTable(w io.Writer, scripts []api.SupportScript) error {
+	tw := newTableWriter(w)
+	fmt.Fprintln(tw, "ID\tNAME\tLANGUAGE\tTAGS")
+	for _, s := range scripts {
+		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\n", s.ID, orDash(s.Name), orDash(s.Language), orDash(formatScriptTags(s.Tags)))
+	}
+	return tw.Flush()
+}
+
+// warnIfLanguageIgnored warns when --language was sent but the server's reply
+// carries no language: servers older than script languages drop the field.
+func warnIfLanguageIgnored(cmd *cobra.Command, script *api.SupportScript) {
+	if cmd.Flags().Changed("language") && script.Language == "" {
+		fmt.Fprintln(cmd.ErrOrStderr(), "warning: the server did not report a script language, so it may not support --language and ignored it")
+	}
+}
+
 // addScriptContentFlags registers the flags shared by `script create` and
 // `script update`.
 func addScriptContentFlags(cmd *cobra.Command) {
 	cmd.Flags().String("name", "", "script name")
-	cmd.Flags().String("tags", "", "comma-separated tags")
+	cmd.Flags().String("tags", "", "comma-separated tags (on update, an empty value clears them)")
+	cmd.Flags().String("language", "", "how the device runs the body: elixir (server default) or shell")
 	cmd.Flags().String("text", "", "script body")
 	cmd.Flags().String("text-file", "", "read the script body from a file (use - for stdin)")
 }
