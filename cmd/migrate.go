@@ -26,10 +26,10 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 
 	"github.com/nerves-hub/nh/internal/config"
 	"github.com/nerves-hub/nh/internal/legacy"
+	"github.com/nerves-hub/nh/internal/pki"
 	"github.com/spf13/cobra"
 )
 
@@ -169,7 +169,14 @@ func planKeys(keys []legacy.Key, dataDir string, force bool) []keyChange {
 	changes := make([]keyChange, 0, len(keys))
 	for _, k := range keys {
 		c := keyChange{Org: k.Org, Name: k.Name, Action: "import"}
-		if !force && keyExists(dataDir, k.Org, k.Name) {
+		switch {
+		case rsaKeyExists(dataDir, k.Org, k.Name):
+			// Names are unique within an org whatever the scheme, and --force
+			// only replaces an ed25519 keypair, so never put one beside an RSA
+			// key of the same name.
+			c.Action = "skip"
+			c.Reason = "a secure_boot_v2_rsa key with this name already exists"
+		case !force && keyExists(dataDir, k.Org, k.Name):
 			c.Action = "skip"
 			c.Reason = "already exists (use --force to overwrite)"
 		}
@@ -225,24 +232,32 @@ func applyMigration(dataDir string, l legacy.Config, cur *config.Settings, keys 
 // writeKey writes a single imported key into <dataDir>/keys/<org>/, mirroring
 // the layout and permissions used by `nh key create`.
 func writeKey(dataDir string, k legacy.Key) error {
-	dir := filepath.Join(dataDir, "keys", k.Org)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.MkdirAll(pki.KeyDir(dataDir, k.Org), 0o700); err != nil {
 		return fmt.Errorf("creating key directory for %s: %w", k.Org, err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, k.Name+".priv"), []byte(k.Priv+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(pki.Ed25519PrivateKeyPath(dataDir, k.Org, k.Name), []byte(k.Priv+"\n"), 0o600); err != nil {
 		return fmt.Errorf("writing private key %s/%s: %w", k.Org, k.Name, err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, k.Name+".pub"), []byte(k.Pub+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(pki.Ed25519PublicKeyPath(dataDir, k.Org, k.Name), []byte(k.Pub+"\n"), 0o644); err != nil {
 		return fmt.Errorf("writing public key %s/%s: %w", k.Org, k.Name, err)
 	}
 	return nil
 }
 
-// keyExists reports whether either half of a keypair is already present.
+// keyExists reports whether any local key file for name is already present,
+// whatever its scheme.
 func keyExists(dataDir, org, name string) bool {
-	dir := filepath.Join(dataDir, "keys", org)
-	for _, ext := range []string{".priv", ".pub"} {
-		if _, err := os.Stat(filepath.Join(dir, name+ext)); err == nil {
+	return anyExists(pki.LocalKeyPaths(dataDir, org, name)...)
+}
+
+// rsaKeyExists reports whether a secure_boot_v2_rsa key named name is present.
+func rsaKeyExists(dataDir, org, name string) bool {
+	return anyExists(pki.RSAPrivateKeyPath(dataDir, org, name), pki.RSAPublicKeyPath(dataDir, org, name))
+}
+
+func anyExists(paths ...string) bool {
+	for _, p := range paths {
+		if _, err := os.Stat(p); err == nil {
 			return true
 		}
 	}
