@@ -265,7 +265,17 @@ release can deliver to devices)
   `--password`, `--skip-signing`). The API has no archive delete
 
 **`nh deployment`** — manage deployment groups
-- `list`, `show <name>`, `create <name>`, `update <name>`, `delete <name>`
+- `list`, `show <name>`, `delete <name>`
+- `create <name>` — `--firmware <uuid>` (required), `--state on|off`,
+  `--version`, `--tag` (repeatable), `--tag-operator and|or`,
+  `--delta-updatable`, `--notes`. The server always creates a group turned off,
+  so `--state on` turns it on with a second request
+- `update <name>` — `--firmware`, `--archive` and `--required` create a new
+  release (`--archive` on its own keeps the current firmware); `--state`,
+  `--version`, `--tag`, `--tag-operator`, `--delta-updatable` and `--notes`
+  change the group's settings. `--tag ""` and `--version ""` clear a condition.
+  A new release and setting changes go to the server as separate requests:
+  settings (and `--state off`) first, then the release, then `--state on`
 
 **`nh key`** — manage firmware signing keys (see [Signing key schemes](#signing-key-schemes))
 - `list`, `show <name>` — include each key's `scheme`; for an RSA key the Secure

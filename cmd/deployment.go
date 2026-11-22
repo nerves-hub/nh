@@ -145,10 +145,22 @@ func runDeploymentShow(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(tw, "Delta updatable:\t%s\n", yesNo(d.DeltaUpdatable))
 	fmt.Fprintf(tw, "Version condition:\t%s\n", orDash(d.Conditions.Version))
 	fmt.Fprintf(tw, "Tag conditions:\t%s\n", orDash(strings.Join(d.Conditions.Tags, ", ")))
+	fmt.Fprintf(tw, "Tag operator:\t%s\n", tagOperatorLabel(d.Conditions.TagOperator))
 	fmt.Fprintf(tw, "Firmware:\t%s\n", orDash(d.FirmwareUUID))
+	fmt.Fprintf(tw, "Archive:\t%s\n", orDash(d.ArchiveUUID))
 	if r := d.CurrentRelease; r != nil {
 		fmt.Fprintf(tw, "Current release:\t#%d (%s %s)\n",
 			r.Number, orDash(r.Firmware.Version), orDash(r.Firmware.UUID))
+		fmt.Fprintf(tw, "Release required:\t%s\n", yesNo(r.Required))
+	}
+	// Notes are free text; give each line its own row so a newline doesn't
+	// break the table.
+	for i, line := range strings.Split(orDash(strings.TrimRight(d.Notes, "\n")), "\n") {
+		label := "Notes:"
+		if i > 0 {
+			label = ""
+		}
+		fmt.Fprintf(tw, "%s\t%s\n", label, strings.TrimRight(line, "\r"))
 	}
 	return tw.Flush()
 }
@@ -215,8 +227,16 @@ var deploymentCreateCmd = &cobra.Command{
 	Long: `Create a deployment group in a product.
 
 A firmware UUID is required (--firmware). Conditions target which devices the
-deployment applies to: --version sets a version requirement and --tag
-(repeatable) sets required tags.`,
+deployment applies to: --version sets a version requirement, --tag
+(repeatable) sets tags, and --tag-operator says whether a device needs all of
+the tags (and, the default) or any of them (or).
+
+The server always creates a group turned off. With --state on, nh turns the
+group on with a second request once it exists.
+
+A group's first release has no archive and isn't required. Both belong to a
+release, so set them afterwards with "nh deployment update", passing --archive
+(and --required if you want) to create a new release.`,
 	Args: exactlyOneArg(
 		"deployment name missing",
 		"too many arguments: provide a single deployment name",
@@ -227,8 +247,21 @@ deployment applies to: --version sets a version requirement and --tag
 var deploymentUpdateCmd = &cobra.Command{
 	Use:   "update <name>",
 	Short: "Update a deployment group",
-	Long: `Update a deployment group. Only the fields you pass are changed:
---firmware, --state, --version, --tag, --delta-updatable.`,
+	Long: `Update a deployment group. Only the fields you pass are changed.
+
+--firmware, --archive and --required create a new release. A new release has
+only the archive you pass with --archive, and --archive on its own keeps the
+current firmware. --required marks the new release required, so devices
+install it on the way to any later release.
+
+--state, --version, --tag, --tag-operator, --delta-updatable and --notes
+change the group's own settings. --tag replaces the tag list, and --tag "" or
+--version "" clears it.
+
+The server applies a new release and setting changes in separate requests, so
+nh sends them one after another: the settings (including --state off) first,
+then the new release, and --state on last. That way a release never reaches
+devices outside the new conditions, or a group that's being turned off.`,
 	Args: exactlyOneArg(
 		"deployment name missing",
 		"too many arguments: provide a single deployment name",
@@ -242,39 +275,82 @@ func init() {
 		c.Flags().String("state", "", "deployment state: on or off")
 		c.Flags().String("version", "", "version condition (e.g. \">= 1.0.0\")")
 		c.Flags().StringArray("tag", nil, "tag condition; repeatable")
+		c.Flags().String("tag-operator", "", "how tags match: \"and\" (every tag, the default) or \"or\" (any tag)")
 		c.Flags().Bool("delta-updatable", false, "enable delta firmware updates")
+		c.Flags().String("notes", "", "notes describing the deployment group")
 		deploymentCmd.AddCommand(c)
 	}
+	deploymentUpdateCmd.Flags().String("archive", "", "archive UUID for the new release")
+	deploymentUpdateCmd.Flags().Bool("required", false, "mark the new release required")
 }
 
 // deploymentInputFromFlags reads the deployment write flags, returning the
 // input, whether any field was provided, and a validation error.
 func deploymentInputFromFlags(cmd *cobra.Command) (api.DeploymentInput, bool, error) {
 	var in api.DeploymentInput
+	flags := cmd.Flags()
 	changed := false
-	if cmd.Flags().Changed("firmware") {
+	if flags.Changed("firmware") {
 		in.Firmware = mustString(cmd, "firmware")
+		if in.Firmware == "" {
+			return in, false, errors.New("--firmware cannot be empty")
+		}
 		changed = true
 	}
-	if cmd.Flags().Changed("state") {
+	if flags.Lookup("archive") != nil && flags.Changed("archive") {
+		in.Archive = mustString(cmd, "archive")
+		if in.Archive == "" {
+			return in, false, errors.New("--archive cannot be empty")
+		}
+		changed = true
+	}
+	if flags.Lookup("required") != nil && flags.Changed("required") {
+		v, _ := flags.GetBool("required")
+		in.Required = &v
+		changed = true
+	}
+	if flags.Changed("state") {
 		in.State = mustString(cmd, "state")
 		if in.State != "on" && in.State != "off" {
 			return in, false, fmt.Errorf("invalid --state %q (use on or off)", in.State)
 		}
 		changed = true
 	}
-	if cmd.Flags().Changed("version") {
-		in.Version = mustString(cmd, "version")
+	if flags.Changed("version") {
+		v := mustString(cmd, "version")
+		in.Version = &v
 		changed = true
 	}
-	if cmd.Flags().Changed("tag") {
-		in.Tags, _ = cmd.Flags().GetStringArray("tag")
+	if flags.Changed("tag") {
+		raw, _ := flags.GetStringArray("tag")
+		tags := make([]string, 0, len(raw))
+		for _, t := range raw {
+			if t != "" {
+				tags = append(tags, t)
+			}
+		}
+		in.Tags = &tags
 		changed = true
 	}
-	if cmd.Flags().Changed("delta-updatable") {
-		v, _ := cmd.Flags().GetBool("delta-updatable")
+	if flags.Changed("tag-operator") {
+		in.TagOperator = mustString(cmd, "tag-operator")
+		if in.TagOperator != "and" && in.TagOperator != "or" {
+			return in, false, fmt.Errorf("invalid --tag-operator %q (use \"and\" or \"or\")", in.TagOperator)
+		}
+		changed = true
+	}
+	if flags.Changed("delta-updatable") {
+		v, _ := flags.GetBool("delta-updatable")
 		in.DeltaUpdatable = &v
 		changed = true
+	}
+	if flags.Changed("notes") {
+		v := mustString(cmd, "notes")
+		in.Notes = &v
+		changed = true
+	}
+	if in.Required != nil && in.Firmware == "" && in.Archive == "" {
+		return in, false, errors.New("--required marks a new release; pass --firmware or --archive with it")
 	}
 	return in, changed, nil
 }
@@ -310,7 +386,7 @@ func runDeploymentCreate(cmd *cobra.Command, args []string) error {
 	if cfg.Output == config.OutputJSON {
 		return printJSON(w, d)
 	}
-	fmt.Fprintf(w, "Created deployment group %q in %s/%s\n", d.Name, org, product)
+	fmt.Fprintf(w, "Created deployment group %q in %s/%s (state: %s)\n", d.Name, org, product, orDash(d.State))
 	return nil
 }
 
@@ -328,7 +404,7 @@ func runDeploymentUpdate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if !changed {
-		return errors.New("nothing to update: provide --firmware, --state, --version, --tag, or --delta-updatable")
+		return errors.New("nothing to update: provide --firmware, --archive, --required, --state, --version, --tag, --tag-operator, --delta-updatable, or --notes")
 	}
 
 	client, err := newAuthedClient(cfg)
@@ -359,4 +435,16 @@ func requireOrgProduct(cfg *config.Config) (org, product string, err error) {
 		return "", "", err
 	}
 	return org, product, nil
+}
+
+// tagOperatorLabel describes how a group's tag conditions match devices.
+func tagOperatorLabel(op string) string {
+	switch op {
+	case "and":
+		return "and (all tags)"
+	case "or":
+		return "or (any tag)"
+	default:
+		return orDash(op)
+	}
 }
