@@ -51,7 +51,9 @@ Check your install with `nh --version`.
 Signing and uploading an fwup (`.fw`) image shells out to
 [`fwup`](https://github.com/fwup-home/fwup), which must be on your `PATH`. It is
 not needed for other firmware formats, for any other command, or when uploading
-with `--skip-signing`.
+with `--skip-signing`. `nh archive upload` also uses it to check an archive's
+metadata; with `--skip-signing` and no `fwup`, it warns and leaves that check to
+the server.
 
 Signing an ESP-IDF image shells out to `espsecure.py` (or `espsecure`) from
 [esptool](https://github.com/espressif/esptool) (`pip install esptool`). AtomVM
@@ -243,6 +245,13 @@ variable — see [Configuration](#configuration)):
   `--allow-unsigned-atomvm`). `list` and `show` report each firmware's format
   (`tool`), and `show` its size
 
+**`nh archive`** — manage archives (supporting fwup files a deployment group
+release can deliver to devices)
+- `list`, `show <uuid>`, `download <uuid>` (`--file <path>`, or `--file -` for stdout)
+- `upload <path>` — check the archive's metadata (its `meta-version` must be
+  SemVer), sign it (via `fwup`), and upload it (`--key`, `--key-file`,
+  `--password`, `--skip-signing`). The API has no archive delete
+
 **`nh deployment`** — manage deployment groups
 - `list`, `show <name>`, `create <name>`, `update <name>`, `delete <name>`
 
@@ -379,7 +388,7 @@ Every variable is read with the `NERVES_HUB_` prefix and, equivalently, the
 | `NERVES_HUB_PRODUCT` | Default product scope | saved settings |
 | `NERVES_HUB_DATA_DIR` | Directory for local state (settings, keys) | `~/.nh` |
 | `NERVES_HUB_NON_INTERACTIVE` | Disable all prompts; missing input is an error (useful in CI) | `false` |
-| `NERVES_HUB_PRIVATE_KEY` | Unencrypted base64 Ed25519 signing key for `firmware upload` of fwup and AtomVM images (alternative to `--key`) | — |
+| `NERVES_HUB_PRIVATE_KEY` | Unencrypted base64 Ed25519 signing key for `firmware upload` of fwup and AtomVM images, and for `archive upload` (alternative to `--key`) | — |
 | `NERVES_HUB_DEPLOYMENT_NAME` | Deployment group `firmware upload` updates when `--deploy` is not given | — |
 
 Boolean variables accept `1`, `true`, `yes`, `y`, or `on` (case-insensitive).
@@ -424,6 +433,7 @@ behavior in `internal/`:
   Secure Boot v2 RSA-3072, RAUC certificates)
 - `internal/phoenix/` — Phoenix Channels client (device console / shell)
 - `internal/mix/` — Mix / Nerves project integration helpers
+- `internal/semver/` — Semantic Versioning 2.0.0 checks (archive versions)
 
 ## Contributing
 
