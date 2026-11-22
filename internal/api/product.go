@@ -28,10 +28,31 @@ import (
 	"net/url"
 )
 
-// Product is a NervesCloud product within an organization, as returned by
-// GET /api/orgs/{org}/products.
+// Product is a NervesCloud product within an organization. The server renders
+// the same shape for list, show, create and update (ProductJSON.product/1 in
+// nerves_hub_web); it sends no id or timestamps.
+//
+// The settings fields are pointers, or omitted when empty, because servers
+// that predate product settings do not send them: an absent setting is
+// unknown, not false.
 type Product struct {
 	Name string `json:"name"`
+
+	// AllowedUpdateTools is the firmware formats the product accepts, such as
+	// "fwup", "esp-idf", "atomvm" or "rauc". fwup is always accepted.
+	AllowedUpdateTools []string `json:"allowed_update_tools,omitempty"`
+	// RequireUniqueFirmwareVersion rejects uploaded firmware whose version
+	// already exists for the same platform and architecture.
+	RequireUniqueFirmwareVersion *bool `json:"require_unique_firmware_version,omitempty"`
+	// AllowUnsignedESPIDFFirmware accepts ESP-IDF images with no Secure Boot
+	// v2 signature block.
+	AllowUnsignedESPIDFFirmware *bool `json:"allow_unsigned_esp_idf_firmware,omitempty"`
+	// AllowUnsignedAtomVMFirmware accepts AtomVM packbeam archives with no
+	// signature entry.
+	AllowUnsignedAtomVMFirmware *bool `json:"allow_unsigned_atomvm_firmware,omitempty"`
+	// DefaultManagedUpdatesAllowed is the managed_updates_allowed grant a new
+	// device in this product starts with.
+	DefaultManagedUpdatesAllowed *bool `json:"default_managed_updates_allowed,omitempty"`
 }
 
 // ListProducts returns the products in org via GET /orgs/{org}/products.
@@ -51,6 +72,10 @@ func (c *Client) ListProducts(ctx context.Context, org string) ([]Product, error
 }
 
 // productCreateRequest is the body sent to POST /orgs/{org}/products.
+//
+// The name is a top-level field. The published OpenAPI spec documents a
+// {"product":{"name":...}} wrapper, but ProductController.create reads
+// Map.take(params, ["name"]), so a wrapped name would never arrive.
 type productCreateRequest struct {
 	Name string `json:"name"`
 }
@@ -78,18 +103,9 @@ func (c *Client) CreateProduct(ctx context.Context, org, name string) (*Product,
 	return &resp.Data, nil
 }
 
-// ProductDetail is the full product representation returned by
-// GET /api/orgs/{org}/products/{name}.
-type ProductDetail struct {
-	ID         int       `json:"id"`
-	Name       string    `json:"name"`
-	InsertedAt Timestamp `json:"inserted_at"`
-	UpdatedAt  Timestamp `json:"updated_at"`
-}
-
 // GetProduct returns a single product by name via
 // GET /orgs/{org}/products/{name}.
-func (c *Client) GetProduct(ctx context.Context, org, name string) (*ProductDetail, error) {
+func (c *Client) GetProduct(ctx context.Context, org, name string) (*Product, error) {
 	if org == "" {
 		return nil, errors.New("api: org is required to get a product")
 	}
@@ -98,7 +114,7 @@ func (c *Client) GetProduct(ctx context.Context, org, name string) (*ProductDeta
 	}
 
 	var resp struct {
-		Data ProductDetail `json:"data"`
+		Data Product `json:"data"`
 	}
 	path := productPath(org, name)
 	if err := c.Get(ctx, path, nil, &resp); err != nil {

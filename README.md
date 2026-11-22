@@ -128,7 +128,28 @@ variable — see [Configuration](#configuration)):
 - `remove-member <email>` — remove a member from an organization
 
 **`nh product`** — manage products
-- `list`, `show <name>`, `create <name>`, `delete <name>`
+- `list`, `show <name>` — list products or show one, with their settings
+  (accepted firmware formats, unique-version and unsigned-firmware rules, and
+  the default device-managed updates grant)
+- `create <name>`, `delete <name>`
+- `update <name>` — change a product's settings; only the flags you pass are
+  sent, and a product cannot be renamed:
+  - `--allow-tool <tool>` / `--disallow-tool <tool>` add or remove a firmware
+    format (`fwup`, `esp-idf`, `atomvm`, `rauc`); repeatable or comma-separated
+  - `--tools <list>` sets the whole list instead, so `--tools fwup` removes
+    every other format. fwup is always kept and cannot be disallowed
+  - `--allow-unsigned-esp-idf`, `--allow-unsigned-atomvm`,
+    `--require-unique-firmware-version`, `--default-managed-updates-allowed`
+    take `=true` or `=false` (on its own, the flag means true)
+
+  A format other than fwup must also be enabled on the NervesHub instance
+  (`ESP_IDF_FIRMWARE_ENABLED`, `ATOMVM_FIRMWARE_ENABLED` or
+  `RAUC_FIRMWARE_ENABLED`) before a product can accept it.
+
+  ```sh
+  nh product update thermostat --allow-tool esp-idf --allow-unsigned-esp-idf
+  nh product update thermostat --disallow-tool atomvm
+  ```
 
 **`nh device`** — manage devices
 - `list` — list devices in a product (`--filter key:value`, `--sort`, `--page`);

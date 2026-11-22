@@ -24,8 +24,10 @@ package cmd
 
 import (
 	"fmt"
-	"strconv"
+	"io"
+	"strings"
 
+	"github.com/nerves-hub/nh/internal/api"
 	"github.com/nerves-hub/nh/internal/config"
 	"github.com/spf13/cobra"
 )
@@ -34,9 +36,12 @@ import (
 var productShowCmd = &cobra.Command{
 	Use:   "show <name>",
 	Short: "Show details for a product",
-	Long:  "Show details for a single product by its name.",
-	Args:  productNameArgs,
-	RunE:  runProductShow,
+	Long: `Show a single product by its name, with its settings: the firmware
+formats it accepts, whether firmware versions must be unique, whether unsigned
+ESP-IDF and AtomVM firmware is accepted, and whether new devices may manage
+their own updates. Change them with ` + "`nh product update`" + `.`,
+	Args: productNameArgs,
+	RunE: runProductShow,
 }
 
 func init() {
@@ -67,6 +72,13 @@ func runProductShow(cmd *cobra.Command, args []string) error {
 		return printJSON(w, product)
 	}
 
+	return printProductDetail(w, product)
+}
+
+// printProductDetail writes a product's name and settings as a two-column
+// table. Shared by show and update. A setting the server did not report
+// (one older than product settings) is left out rather than shown as off.
+func printProductDetail(w io.Writer, product *api.Product) error {
 	tw := newTableWriter(w)
 	row := func(label, value string) {
 		if value != "" {
@@ -74,14 +86,35 @@ func runProductShow(cmd *cobra.Command, args []string) error {
 		}
 	}
 	row("Name:", product.Name)
-	if product.ID != 0 {
-		row("ID:", strconv.Itoa(product.ID))
+	if product.AllowedUpdateTools != nil {
+		row("Update tools:", updateToolsText(product.AllowedUpdateTools, ", "))
 	}
-	if !product.InsertedAt.IsZero() {
-		row("Created:", product.InsertedAt.Format("2006-01-02 15:04:05 MST"))
-	}
-	if !product.UpdatedAt.IsZero() {
-		row("Updated:", product.UpdatedAt.Format("2006-01-02 15:04:05 MST"))
-	}
+	row("Unique firmware versions:", boolWord(product.RequireUniqueFirmwareVersion, "required", "not required"))
+	row("Unsigned ESP-IDF firmware:", boolWord(product.AllowUnsignedESPIDFFirmware, "allowed", "refused"))
+	row("Unsigned AtomVM firmware:", boolWord(product.AllowUnsignedAtomVMFirmware, "allowed", "refused"))
+	row("Device-managed updates (new devices):", boolWord(product.DefaultManagedUpdatesAllowed, "allowed", "not allowed"))
 	return tw.Flush()
+}
+
+// updateToolsText joins tools with sep. A list the server reports but leaves
+// empty means the product accepts no firmware, so it reads "none" rather than
+// disappearing.
+func updateToolsText(tools []string, sep string) string {
+	if len(tools) == 0 {
+		return "none"
+	}
+	return strings.Join(tools, sep)
+}
+
+// boolWord renders an optional setting: yes or no by its value, or "" when
+// the server did not report it.
+func boolWord(v *bool, yes, no string) string {
+	switch {
+	case v == nil:
+		return ""
+	case *v:
+		return yes
+	default:
+		return no
+	}
 }
