@@ -91,25 +91,6 @@ func TestCLISessionErrorClassification(t *testing.T) {
 	}
 }
 
-func TestParseRetryAfter(t *testing.T) {
-	now := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
-	cases := map[string]time.Duration{
-		"":                              0,
-		"5":                             5 * time.Second,
-		" 30 ":                          30 * time.Second,
-		"0":                             0,
-		"-3":                            0,
-		"soon":                          0,
-		"Sun, 22 Nov 2026 12:00:10 GMT": 10 * time.Second,
-		"Sun, 22 Nov 2026 11:59:00 GMT": 0,
-	}
-	for in, want := range cases {
-		if got := parseRetryAfter(in, now); got != want {
-			t.Errorf("parseRetryAfter(%q) = %v, want %v", in, got, want)
-		}
-	}
-}
-
 func TestWaitForCLISessionReady(t *testing.T) {
 	c, polls := pollServer(t, func(w http.ResponseWriter, n int) {
 		if n < 3 {

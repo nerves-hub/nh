@@ -29,8 +29,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"strconv"
-	"strings"
 	"time"
 )
 
@@ -43,13 +41,11 @@ type CLISessionStatus struct {
 }
 
 // CLISessionError is the error CheckCLISession returns for a non-2xx
-// response. It wraps the *APIError (so errors.As(err, &apiErr) still works)
-// and adds what polling needs to decide whether to try again.
+// response. It wraps the *APIError (so errors.As(err, &apiErr) still works,
+// and RetryAfter comes from it) and adds what polling needs to decide whether
+// to try again.
 type CLISessionError struct {
 	*APIError
-	// RetryAfter is the wait the server asked for in a Retry-After header, or
-	// zero when it sent none.
-	RetryAfter time.Duration
 }
 
 // Unwrap returns the underlying *APIError.
@@ -103,12 +99,11 @@ func (c *Client) CheckCLISession(ctx context.Context, token string) (*CLISession
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
 		var apiErr *APIError
 		if !errors.As(parseError(resp), &apiErr) {
 			return nil, fmt.Errorf("api: GET %s: unexpected status %s", endpoint, resp.Status)
 		}
-		return nil, &CLISessionError{APIError: apiErr, RetryAfter: retryAfter}
+		return nil, &CLISessionError{APIError: apiErr}
 	}
 
 	var out struct {
@@ -118,31 +113,6 @@ func (c *Client) CheckCLISession(ctx context.Context, token string) (*CLISession
 		return nil, fmt.Errorf("api: decoding response: %w", err)
 	}
 	return &out.Data, nil
-}
-
-// parseRetryAfter reads a Retry-After header, which is either a number of
-// seconds or an HTTP date. It returns zero when the header is missing,
-// malformed or in the past.
-//
-// The fix/nested-changeset-errors branch adds a RetryAfter field to APIError
-// itself; once both land this can read that instead.
-func parseRetryAfter(v string, now time.Time) time.Duration {
-	v = strings.TrimSpace(v)
-	if v == "" {
-		return 0
-	}
-	if secs, err := strconv.Atoi(v); err == nil {
-		if secs <= 0 {
-			return 0
-		}
-		return time.Duration(secs) * time.Second
-	}
-	if t, err := http.ParseTime(v); err == nil {
-		if d := t.Sub(now); d > 0 {
-			return d
-		}
-	}
-	return 0
 }
 
 // CLIPollOptions tunes WaitForCLISession. Zero fields take the defaults below.
