@@ -29,10 +29,15 @@ import (
 )
 
 // SigningKey is a firmware/archive signing key belonging to an organization,
-// as returned by GET /api/orgs/{org}/keys[/{name}]. Key is the public key.
+// as returned by GET /api/orgs/{org}/keys[/{name}] (KeyJSON.key/1 in
+// nerves_hub_web). Key is the public key, or for x509_certificate the PEM
+// certificate. Scheme is "ed25519", "secure_boot_v2_rsa" or
+// "x509_certificate"; servers from before schemes existed omit it, and every
+// key they hold is ed25519.
 type SigningKey struct {
-	Name string `json:"name"`
-	Key  string `json:"key"`
+	Name   string `json:"name"`
+	Key    string `json:"key"`
+	Scheme string `json:"scheme,omitempty"`
 }
 
 // ListSigningKeys returns an organization's signing keys via
@@ -52,14 +57,24 @@ func (c *Client) ListSigningKeys(ctx context.Context, org string) ([]SigningKey,
 }
 
 // signingKeyCreateRequest is the body sent to POST /orgs/{org}/keys.
+// Scheme is omitted when empty, which the server takes as ed25519.
 type signingKeyCreateRequest struct {
-	Name string `json:"name"`
-	Key  string `json:"key"`
+	Name   string `json:"name"`
+	Key    string `json:"key"`
+	Scheme string `json:"scheme,omitempty"`
 }
 
-// CreateSigningKey registers a signing key (name + base64 public key) via
-// POST /orgs/{org}/keys and returns the created key.
+// CreateSigningKey registers an ed25519 signing key (name + base64 public key)
+// via POST /orgs/{org}/keys and returns the created key. It sends no scheme,
+// so the server applies its ed25519 default.
 func (c *Client) CreateSigningKey(ctx context.Context, org, name, publicKey string) (*SigningKey, error) {
+	return c.CreateSigningKeyWithScheme(ctx, org, name, "", publicKey)
+}
+
+// CreateSigningKeyWithScheme registers a signing key of the given scheme via
+// POST /orgs/{org}/keys and returns the created key. An empty scheme is left
+// out of the request, so the server applies its ed25519 default.
+func (c *Client) CreateSigningKeyWithScheme(ctx context.Context, org, name, scheme, publicKey string) (*SigningKey, error) {
 	if org == "" {
 		return nil, errors.New("api: org is required to create a signing key")
 	}
@@ -73,7 +88,7 @@ func (c *Client) CreateSigningKey(ctx context.Context, org, name, publicKey stri
 	var resp struct {
 		Data SigningKey `json:"data"`
 	}
-	body := signingKeyCreateRequest{Name: name, Key: publicKey}
+	body := signingKeyCreateRequest{Name: name, Key: publicKey, Scheme: scheme}
 	if err := c.Post(ctx, keysPath(org), body, &resp); err != nil {
 		return nil, err
 	}

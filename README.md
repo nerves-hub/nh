@@ -174,8 +174,15 @@ variable — see [Configuration](#configuration)):
 **`nh deployment`** — manage deployment groups
 - `list`, `show <name>`, `create <name>`, `update <name>`, `delete <name>`
 
-**`nh key`** — manage firmware signing keys
-- `list`, `show <name>`, `create <name>`, `delete <name>`
+**`nh key`** — manage firmware signing keys (see [Signing key schemes](#signing-key-schemes))
+- `list`, `show <name>` — include each key's `scheme`; for an RSA key the Secure
+  Boot v2 eFuse digest, for a certificate its SHA-256 fingerprint
+- `create <name>` — generate a keypair locally and register its public key;
+  `--scheme ed25519` (default, `--password` optional) or `--scheme secure_boot_v2_rsa`
+- `add <name> --public-key <file>` — register an existing public key or
+  certificate without generating anything; `--scheme` is detected from the file
+  when omitted, and the key is checked locally before it is sent
+- `delete <name>` — delete the key from the server; local key files are kept and listed
 
 **`nh ca`** — manage organization CA certificates
 - `generate` — generate a CA certificate locally
@@ -194,6 +201,30 @@ variable — see [Configuration](#configuration)):
 
 **`nh migrate`** — import settings and signing keys from the old Elixir CLI (see
 [Migrating from the Elixir CLI](#migrating-from-the-elixir-cli))
+
+### Signing key schemes
+
+Every signing key has a `scheme`, and a key only verifies firmware of its own
+scheme. Which one you need depends on the firmware format you upload:
+
+| Firmware format | Scheme | Key string | Create or register |
+| --- | --- | --- | --- |
+| fwup `.fw` (Nerves) | `ed25519` | base64 Ed25519 public key (an fwup `.pub`) | `nh key create <name>`, or `nh key add <name> --public-key fwup-key.pub` |
+| ESP-IDF `.bin` (Secure Boot v2) | `secure_boot_v2_rsa` | PEM RSA-3072 public key | `nh key create <name> --scheme secure_boot_v2_rsa`, or `nh key add <name> --public-key key.pem` |
+| RAUC bundle | `x509_certificate` | PEM X.509 certificate (optionally followed by its issuers) | `nh key add <name> --scheme x509_certificate --public-key cert.pem` |
+
+Keys `nh key create` generates live in `<data-dir>/keys/<org>/`:
+
+- `ed25519`: `<name>.priv` (encrypted with an optional password) and `<name>.pub`.
+- `secure_boot_v2_rsa`: `<name>.rsa.pem`, an **unencrypted** PKCS#1 PEM private
+  key (mode 0600), and `<name>.rsa.pub.pem`. It is the same format
+  `espsecure.py generate_signing_key --version 2 --scheme rsa3072` writes, so
+  `espsecure.py sign_data --version 2 --keyfile <name>.rsa.pem` can use it
+  directly. It is left unencrypted because espsecure needs a plain key file;
+  protect it accordingly.
+
+`nh key add` accepts an espsecure PEM private key too, and sends only its public
+half. It never accepts a certificate file that also holds a private key.
 
 ## Configuration
 
@@ -289,7 +320,8 @@ behavior in `internal/`:
 - `cmd/` — Cobra command definitions and flag parsing; no business logic
 - `internal/api/` — HTTP client and API request/response types
 - `internal/config/` — URI / token / data-dir handling and environment binding
-- `internal/pki/` — X.509 certificate and Ed25519 signing-key handling
+- `internal/pki/` — X.509 certificate handling and signing keys (Ed25519,
+  Secure Boot v2 RSA-3072, RAUC certificates)
 - `internal/phoenix/` — Phoenix Channels client (device console / shell)
 - `internal/mix/` — Mix / Nerves project integration helpers
 
