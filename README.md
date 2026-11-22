@@ -155,6 +155,10 @@ variable — see [Configuration](#configuration)):
 - `logs <identifier>` — show the log lines a device has sent
   (`--level`, `--search`, `--since`, `--before`, `--limit`, `--order`, `--meta`);
   `-f`/`--follow` tails new lines by polling (`--interval`)
+- `metrics <identifier>` — show the metric readings a device has reported, grouped
+  by metric name (`--key`, `--since`, `--before`, `--limit`, `--order`);
+  `--list-keys` lists the metric names in the fetched reports, and
+  `-f`/`--follow` tails new readings by polling (`--interval`)
 - `run-code <identifier> <code>` — run Elixir code on a device
 - `scripts <identifier>`, `run-script <identifier> <name-or-id>` — support scripts
 - `network-identities <identifier>` — list the keys a device reports holding on
