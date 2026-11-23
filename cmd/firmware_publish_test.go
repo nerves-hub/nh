@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -51,23 +52,52 @@ func stubFwupMeta(t *testing.T, meta map[string]string) {
 	t.Cleanup(func() { fwupBin = old })
 }
 
-// publishServer accepts a firmware upload and records any deployment updates.
+// publishServer accepts a firmware upload and records the deployment groups
+// given a release, on a server with the deployment release API.
 func publishServer(t *testing.T) (srv *httptest.Server, deployed *[]string) {
+	t.Helper()
+	return publishServerFor(t, true)
+}
+
+// publishServerFor is publishServer for a server with the release API
+// (releases true), which takes a new release with POST .../releases, or
+// without it, which answers that route with 404 and takes the release PUT.
+func publishServerFor(t *testing.T, releases bool) (srv *httptest.Server, deployed *[]string) {
 	t.Helper()
 	var mu sync.Mutex
 	seen := []string{}
 	deployed = &seen
+	record := func(group string, body map[string]any) {
+		if body["firmware"] != "new-uuid" {
+			t.Errorf("release for %s should name the uploaded firmware, got %+v", group, body)
+		}
+		mu.Lock()
+		seen = append(seen, group)
+		*deployed = seen
+		mu.Unlock()
+	}
 
 	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
 		switch {
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/firmwares"):
 			_, _ = w.Write([]byte(`{"data":{"uuid":"new-uuid","version":"1.4.0"}}`))
-		case r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/deployments/"):
-			mu.Lock()
-			seen = append(seen, filepath.Base(r.URL.Path))
-			*deployed = seen
-			mu.Unlock()
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/releases"):
+			if !releases {
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(`{"errors":{"detail":"Not Found"}}`))
+				return
+			}
+			record(filepath.Base(filepath.Dir(r.URL.Path)), body)
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"data":{"number":2,"firmware":{"uuid":"new-uuid"}}}`))
+		case !releases && r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/deployments/"):
+			_, _ = w.Write([]byte(`{"data":{"name":"x"}}`))
+		case !releases && r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/deployments/"):
+			dep, _ := body["deployment"].(map[string]any)
+			record(filepath.Base(r.URL.Path), dep)
 			_, _ = w.Write([]byte(`{"data":{"name":"x"}}`))
 		default:
 			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
@@ -150,6 +180,29 @@ func TestFirmwareUploadDeploysToGroups(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q, got:\n%s", want, out)
 		}
+	}
+}
+
+// A server without the release API answers POST .../releases with 404; the
+// group is there, so the release goes out with the PUT it has always taken.
+func TestFirmwareUploadDeploysOnServerWithoutReleaseAPI(t *testing.T) {
+	stubFwupMeta(t, map[string]string{"product": "thermostat", "version": "1.4.0"})
+	srv, deployed := publishServerFor(t, false)
+
+	out, err := execCmd(t, "",
+		"firmware", "upload", writeFW(t),
+		"--skip-signing", "--deploy", "canary",
+		"--org", "acme", "--product", "thermostat",
+		"--uri", srv.URL, "--token", "tok",
+	)
+	if err != nil {
+		t.Fatalf("upload --deploy: %v\n%s", err, out)
+	}
+	if got := *deployed; len(got) != 1 || got[0] != "canary" {
+		t.Errorf("deployed = %v, want [canary]", got)
+	}
+	if !strings.Contains(out, "Updated deployment group canary to firmware new-uuid") {
+		t.Errorf("output: %s", out)
 	}
 }
 
@@ -263,10 +316,12 @@ func TestFirmwareUploadDeployFailureSaysUploadSucceeded(t *testing.T) {
 	stubFwupMeta(t, map[string]string{"product": "thermostat"})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		if r.Method == http.MethodPost {
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/firmwares") {
 			_, _ = w.Write([]byte(`{"data":{"uuid":"new-uuid","version":"1.4.0"}}`))
 			return
 		}
+		// The group "nope" doesn't exist: its releases and the group itself
+		// are both 404.
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = w.Write([]byte(`{"errors":{"detail":"Not Found"}}`))
 	}))

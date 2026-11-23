@@ -572,7 +572,8 @@ func confirmFirmwareUpload(cmd *cobra.Command, cfg *config.Config, path, product
 }
 
 // deployFirmware points each requested deployment group at uuid, returning the
-// groups updated.
+// groups updated. DeployFirmware creates each release with
+// POST .../releases where the server has it, and the release PUT otherwise.
 func deployFirmware(cmd *cobra.Command, client *api.Client, org, product, uuid string) ([]string, error) {
 	names := deployTargets(cmd)
 	if len(names) == 0 {
@@ -585,7 +586,7 @@ func deployFirmware(cmd *cobra.Command, client *api.Client, org, product, uuid s
 	w := cmd.OutOrStdout()
 	updated := make([]string, 0, len(names))
 	for _, name := range names {
-		if _, err := client.UpdateDeployment(cmd.Context(), org, product, name, api.DeploymentInput{Firmware: uuid}); err != nil {
+		if err := client.DeployFirmware(cmd.Context(), org, product, name, uuid); err != nil {
 			// Be explicit that the upload itself is done, so the fix is to
 			// retry the deployment rather than the whole publish.
 			return updated, fmt.Errorf("firmware %s uploaded, but updating deployment group %q failed: %w", uuid, name, err)

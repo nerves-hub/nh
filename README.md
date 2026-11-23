@@ -265,7 +265,37 @@ release can deliver to devices)
   `--password`, `--skip-signing`). The API has no archive delete
 
 **`nh deployment`** — manage deployment groups
-- `list`, `show <name>`, `create <name>`, `update <name>`, `delete <name>`
+- `list`, `show <name>`, `delete <name>`
+- `create <name>` — `--firmware <uuid>` (required), `--state on|off`,
+  `--version`, `--tag` (repeatable), `--tag-operator and|or`,
+  `--delta-updatable`, `--notes`. The server always creates a group turned off,
+  so `--state on` turns it on with a second request
+- `update <name>` — `--firmware`, `--archive` and `--required` create a new
+  release (`--archive` on its own keeps the current firmware); `--state`,
+  `--version`, `--tag`, `--tag-operator`, `--delta-updatable` and `--notes`
+  change the group's settings. `--tag ""` and `--version ""` clear a condition.
+  A new release and setting changes go to the server as separate requests:
+  settings (and `--state off`) first, then the release, then `--state on`.
+  The release is created with `POST .../releases` on a server that has the
+  release API, and with the older release `PUT` otherwise (`firmware upload
+  --deploy` does the same)
+- `release list <group>` — the group's releases, newest first: number, current
+  marker (`*`), firmware version and UUID, archive, required, delta status,
+  who created it and when
+- `release show <group> <number>` — one release, including its description,
+  notes and connecting code
+- `release create <group>` — `--firmware <uuid>` (required), `--archive`,
+  `--required`, `--description`, `--notes`, `--connecting-code` or
+  `--connecting-code-file <path>` (`-` for stdin), and
+  `--connecting-code-mode first|last|override` (where the release's code runs
+  relative to the group's; the server defaults to `last`). The new release
+  becomes the current one and has no archive unless `--archive` is given
+- `release update <group> <number>` — `--required` or `--required=false`,
+  `--connecting-code`, `--connecting-code-file` or `--clear-connecting-code`,
+  and `--connecting-code-mode`. A release's firmware, archive, description and
+  notes can't change once it's made
+- The `release` commands need a NervesHub server with the deployment release
+  API; on an older server they fail with a message saying to upgrade
 
 **`nh key`** — manage firmware signing keys (see [Signing key schemes](#signing-key-schemes))
 - `list`, `show <name>` — include each key's `scheme`; for an RSA key the Secure
