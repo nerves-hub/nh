@@ -153,30 +153,37 @@ func writeIdentity(dataDir, path string, sk key.SecretKey) (key.SecretKey, error
 		return key.SecretKey{}, fmt.Errorf("iroh: creating identity dir: %w", err)
 	}
 
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if errors.Is(err, os.ErrExist) {
-		existing, ok, rerr := ReadIdentity(path)
-		if rerr != nil {
-			return key.SecretKey{}, rerr
-		}
-		if ok {
-			return existing, nil
-		}
-	}
+	// Write the key to a temporary file (CreateTemp makes it 0600), then link
+	// it into place. The link
+	// fails if a key is already there, and a reader never sees a key half
+	// written.
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".identity-*")
 	if err != nil {
 		return key.SecretKey{}, fmt.Errorf("iroh: writing identity: %w", err)
 	}
+	defer os.Remove(tmp.Name())
 
 	seed := sk.Bytes()
-	_, werr := f.WriteString(hex.EncodeToString(seed[:]) + "\n")
-	cerr := f.Close()
-	if werr == nil {
+	_, werr := tmp.WriteString(hex.EncodeToString(seed[:]) + "\n")
+	if cerr := tmp.Close(); werr == nil {
 		werr = cerr
 	}
 	if werr != nil {
-		// Leave no half-written key for the next run to choke on.
-		_ = os.Remove(path)
 		return key.SecretKey{}, fmt.Errorf("iroh: writing identity: %w", werr)
+	}
+
+	if err := os.Link(tmp.Name(), path); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			// Another nh run saved a key first; use that one.
+			existing, ok, rerr := ReadIdentity(path)
+			if rerr != nil {
+				return key.SecretKey{}, rerr
+			}
+			if ok {
+				return existing, nil
+			}
+		}
+		return key.SecretKey{}, fmt.Errorf("iroh: writing identity: %w", err)
 	}
 	return sk, nil
 }

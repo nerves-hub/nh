@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -396,5 +397,24 @@ func TestMachineInstance(t *testing.T) {
 		if got := MachineInstance(tt.host, id); got != tt.want {
 			t.Errorf("MachineInstance(%q) = %q, want %q", tt.host, got, tt.want)
 		}
+	}
+}
+
+func TestEnsureOrgEndpointIgnoresCorruptLegacyKey(t *testing.T) {
+	hub, client := newFakeHub(t)
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Dir(LegacyIdentityPath(dir)), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(LegacyIdentityPath(dir), []byte("not a key\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	sk, err := EnsureOrgEndpoint(context.Background(), client, opts(dir, "acme"))
+	if err != nil {
+		t.Fatalf("a corrupt old key must not block a new organization: %v", err)
+	}
+	if !hub.registered("acme", idOf(sk)) {
+		t.Error("acme should get its own registered key")
 	}
 }

@@ -120,7 +120,7 @@ func TestDeviceAddrFromIdentityMalformed(t *testing.T) {
 		details    map[string]any
 		want       string
 	}{
-		{"bad ticket", id, map[string]any{"ticket": "endpointnotreal"}, "decoding the device's ticket"},
+		{"bad ticket, nothing to fall back on", id, map[string]any{"ticket": "endpointnotreal"}, "decoding the device's ticket"},
 		{"garbage identifier", "not-a-key-or-ticket", nil, "neither an endpoint id nor a ticket"},
 		{"relay not a list", id, map[string]any{"relay_urls": 42}, "not a list of URLs"},
 		{"relay entry not a string", id, map[string]any{"relay_urls": []any{1}}, "not a URL"},
@@ -144,5 +144,21 @@ func TestDeviceAddrFromTicket(t *testing.T) {
 	}
 	if _, err := DeviceAddrFromTicket("nope"); err == nil {
 		t.Error("expected an error for a bad ticket")
+	}
+}
+
+func TestDeviceAddrFromIdentityUndecodableTicketFallsBackToRelays(t *testing.T) {
+	// A ticket this build cannot read must not stop a device that also
+	// reported its relays.
+	id, _ := deviceTicket(t)
+	addr, err := DeviceAddrFromIdentity(id, map[string]any{
+		"ticket":     "endpointfromafutureencoding",
+		"relay_urls": []any{testRelay},
+	})
+	if err != nil {
+		t.Fatalf("addr: %v", err)
+	}
+	if addr.EndpointID() != id {
+		t.Errorf("endpoint id = %s, want %s", addr.EndpointID(), id)
 	}
 }

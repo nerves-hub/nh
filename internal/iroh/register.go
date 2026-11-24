@@ -95,11 +95,12 @@ func orgIdentity(ctx context.Context, client *api.Client, opts EndpointOptions) 
 	// No key for this organization yet. If the old per-machine key is the one
 	// registered here, keep using it: that is the registration a user of an
 	// earlier nh already has.
+	//
+	// An unreadable old key is skipped rather than reported: it only matters to
+	// the one organization it may be registered with, and failing here would
+	// stop every new organization over a file it never uses.
 	legacy, ok, err := ReadIdentity(LegacyIdentityPath(opts.DataDir))
-	if err != nil {
-		return key.SecretKey{}, false, err
-	}
-	if ok {
+	if err == nil && ok {
 		registered, err := endpointRegistered(ctx, client, opts.Org, legacy)
 		if err != nil {
 			return key.SecretKey{}, false, err

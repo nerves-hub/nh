@@ -53,26 +53,40 @@ func (a DeviceAddr) EndpointID() string { return a.addr.ID.String() }
 // its current ticket as details["ticket"] and its relays as
 // details["relay_urls"]. In order, this uses:
 //
-//  1. details["ticket"], which must name the same endpoint as identifier;
+//  1. details["ticket"], which must name the same endpoint as identifier (one
+//     that cannot be decoded falls through to the next two);
 //  2. identifier itself when it is a ticket, as early IrohConsole builds
 //     reported it;
 //  3. identifier as an endpoint id, with the relays in details["relay_urls"].
 func DeviceAddrFromIdentity(identifier string, details map[string]any) (DeviceAddr, error) {
 	identifier = strings.TrimSpace(identifier)
 
+	var ticketErr error
 	if t, _ := details["ticket"].(string); strings.TrimSpace(t) != "" {
 		addr, err := endpointticket.Decode(strings.TrimSpace(t))
-		if err != nil {
-			return DeviceAddr{}, fmt.Errorf("iroh: decoding the device's ticket: %w", err)
+		if err == nil {
+			// identifier is what the device proved to NervesHub; a ticket naming
+			// some other endpoint would have us talk to whoever holds that key.
+			if id, err := key.ParseEndpointID(identifier); err == nil && id != addr.ID {
+				return DeviceAddr{}, fmt.Errorf("iroh: the device's ticket is for endpoint %s, not the %s it reported", addr.ID.Short(), id.Short())
+			}
+			return DeviceAddr{addr: addr}, nil
 		}
-		// identifier is what the device proved to NervesHub; a ticket naming
-		// some other endpoint would have us talk to whoever holds that key.
-		if id, err := key.ParseEndpointID(identifier); err == nil && id != addr.ID {
-			return DeviceAddr{}, fmt.Errorf("iroh: the device's ticket is for endpoint %s, not the %s it reported", addr.ID.Short(), id.Short())
-		}
-		return DeviceAddr{addr: addr}, nil
+		// A ticket this build cannot read (a newer encoding, say) need not
+		// stop the connection: the id and relays below are enough to dial.
+		ticketErr = fmt.Errorf("iroh: decoding the device's ticket: %w", err)
 	}
 
+	addr, err := addrFromIdentifier(identifier, details)
+	if err != nil && ticketErr != nil {
+		return DeviceAddr{}, ticketErr
+	}
+	return addr, err
+}
+
+// addrFromIdentifier reads identifier as a ticket, or as an endpoint id with
+// the relays in details["relay_urls"].
+func addrFromIdentifier(identifier string, details map[string]any) (DeviceAddr, error) {
 	if identifier == "" {
 		return DeviceAddr{}, ErrNoDeviceAddr
 	}
