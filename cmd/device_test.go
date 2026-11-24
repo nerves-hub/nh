@@ -1,10 +1,14 @@
 package cmd
 
 import (
+	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/nerves-hub/nh/internal/api"
 )
 
 const deviceResponse = `{"data":{
@@ -103,6 +107,88 @@ func TestDeviceShowNeverSeenDeletedDevice(t *testing.T) {
 	}
 	if strings.Contains(out, "not_seen") {
 		t.Errorf("not_seen should be spelled out, got:\n%s", out)
+	}
+}
+
+// sleepingDeviceResponse is a device that said it was going into deep sleep
+// for five minutes, from a server with device sleep tracking.
+const sleepingDeviceResponse = `{"data":{
+	"identifier":"dev-003",
+	"connection_status":"disconnected",
+	"online":"disconnected",
+	"sleep":{"state":"asleep","mode":"deep","expected_wake_at":"2026-11-24T10:05:00Z"},
+	"version":"1.2.3",
+	"updates_enabled":true,
+	"last_communication":"2026-11-24T10:00:00Z",
+	"deleted":false
+}}`
+
+func TestDeviceShowSleeping(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(sleepingDeviceResponse))
+	}))
+	defer srv.Close()
+
+	out, err := execCmd(t, "",
+		"device", "show", "dev-003",
+		"--org", "acme", "--product", "thermostat",
+		"--uri", srv.URL, "--token", "tok",
+	)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	// The status still says disconnected; the sleep row follows it.
+	status := strings.Index(out, "disconnected")
+	sleep := strings.Index(out, "Sleep:")
+	if status < 0 || sleep < status {
+		t.Errorf("want a Sleep: row after the disconnected status, got:\n%s", out)
+	}
+	if !strings.Contains(out, "deep, back at 2026-11-24 10:05:00 UTC") {
+		t.Errorf("sleep row missing the wake time, got:\n%s", out)
+	}
+}
+
+func TestRenderDeviceSleep(t *testing.T) {
+	wake := &api.Timestamp{Time: time.Date(2026, 11, 24, 10, 5, 0, 0, time.UTC)}
+	cases := []struct {
+		name  string
+		sleep *api.DeviceSleep
+		want  string
+	}{
+		{"asleep", &api.DeviceSleep{State: "asleep", Mode: "deep", ExpectedWakeAt: wake}, "deep, back at 2026-11-24 10:05:00 UTC"},
+		{"asleep without time", &api.DeviceSleep{State: "asleep", Mode: "light"}, "light, asleep, no wake time given"},
+		{"overdue", &api.DeviceSleep{State: "overdue", Mode: "deep", ExpectedWakeAt: wake}, "deep, overdue: was due back 2026-11-24 10:05:00 UTC"},
+		{"going to sleep", &api.DeviceSleep{State: "going_to_sleep", Mode: "deep"}, "deep, going to sleep"},
+		{"going to sleep with time", &api.DeviceSleep{State: "going_to_sleep", Mode: "light", ExpectedWakeAt: wake}, "light, going to sleep, back at 2026-11-24 10:05:00 UTC"},
+		{"unknown state", &api.DeviceSleep{State: "dozing", Mode: "deep"}, "deep, dozing"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			device := &api.Device{Identifier: "dev-003", ConnectionStatus: "disconnected", Sleep: tc.sleep}
+			if err := renderDevice(&buf, device); err != nil {
+				t.Fatalf("renderDevice: %v", err)
+			}
+			var line string
+			for _, l := range strings.Split(buf.String(), "\n") {
+				if strings.HasPrefix(l, "Sleep:") {
+					line = strings.TrimSpace(strings.TrimPrefix(l, "Sleep:"))
+				}
+			}
+			if line != tc.want {
+				t.Errorf("Sleep: %q, want %q; output:\n%s", line, tc.want, buf.String())
+			}
+		})
+	}
+
+	// No sleep object, or a null one, means no row.
+	var buf bytes.Buffer
+	if err := renderDevice(&buf, &api.Device{Identifier: "dev-001", ConnectionStatus: "disconnected"}); err != nil {
+		t.Fatalf("renderDevice: %v", err)
+	}
+	if strings.Contains(buf.String(), "Sleep:") {
+		t.Errorf("no Sleep: row expected without a sleep object, got:\n%s", buf.String())
 	}
 }
 

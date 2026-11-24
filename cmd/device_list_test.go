@@ -225,6 +225,35 @@ func TestDeviceListFilters(t *testing.T) {
 	}
 }
 
+// asleep is a connection filter value from NervesHub's device sleep
+// tracking; nh passes it through, alone or with others.
+func TestDeviceListAsleepFilter(t *testing.T) {
+	for _, value := range []string{"asleep", "connected,asleep"} {
+		t.Run(value, func(t *testing.T) {
+			var got string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				got = r.URL.Query().Get("filters[connection]")
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"data":[]}`))
+			}))
+			defer srv.Close()
+
+			_, err := execCmd(t, "",
+				"device", "list",
+				"--org", "acme", "--product", "thermostat",
+				"--filter", "connection:"+value,
+				"--uri", srv.URL, "--token", "tok",
+			)
+			if err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			if got != value {
+				t.Errorf("filters[connection] = %q, want %q", got, value)
+			}
+		})
+	}
+}
+
 // The server drops filter keys and values it doesn't know (and a key or sort
 // field that isn't an atom on the server is a 500), so nh refuses them before
 // asking, naming what would work.

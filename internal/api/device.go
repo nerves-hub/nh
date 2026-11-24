@@ -42,9 +42,13 @@ type Device struct {
 	// never connected.
 	ConnectionStatus string `json:"connection_status"`
 	// Online is the same status string as ConnectionStatus, not a boolean.
-	Online      string   `json:"online"`
-	Description string   `json:"description"`
-	Tags        []string `json:"tags"`
+	Online string `json:"online"`
+	// Sleep is set from when the device says it is going to sleep until it
+	// connects again, and nil otherwise or from servers that don't send it.
+	// ConnectionStatus still says "disconnected" while it sleeps.
+	Sleep       *DeviceSleep `json:"sleep,omitempty"`
+	Description string       `json:"description"`
+	Tags        []string     `json:"tags"`
 	// Version is the running firmware's version, or "unknown".
 	Version     string `json:"version"`
 	OrgName     string `json:"org_name"`
@@ -69,6 +73,20 @@ type Device struct {
 	// one (DeviceInput.SharedSecret). It carries the secret, which the server
 	// never returns again.
 	SharedSecret *DeviceSharedSecret `json:"shared_secret,omitempty"`
+}
+
+// DeviceSleep is what a device said when it last went to sleep.
+type DeviceSleep struct {
+	// State is "going_to_sleep" while the connection is still open,
+	// "asleep" once it has closed, or "overdue" once the device is later
+	// than it said by more than the server's margin (two minutes or a tenth
+	// of the sleep, whichever is longer).
+	State string `json:"state"`
+	// Mode is "deep" or "light".
+	Mode string `json:"mode"`
+	// ExpectedWakeAt is when the device said it would be back, or nil when
+	// it gave no time.
+	ExpectedWakeAt *Timestamp `json:"expected_wake_at,omitempty"`
 }
 
 // FirmwareMetadata describes the firmware currently running on a device.
