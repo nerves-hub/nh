@@ -39,6 +39,7 @@ import (
 	"github.com/nerves-hub/nh/internal/api"
 	"github.com/nerves-hub/nh/internal/config"
 	"github.com/nerves-hub/nh/internal/firmware"
+	"github.com/nerves-hub/nh/internal/interrupt"
 	"github.com/nerves-hub/nh/internal/mix"
 	"github.com/nerves-hub/nh/internal/pki"
 	"github.com/schollz/progressbar/v3"
@@ -358,13 +359,15 @@ func signForUpload(cmd *cobra.Command, cfg *config.Config, org, path string, for
 }
 
 // signedTempPath creates an empty temporary file named for the format, so a
-// signed .avm is not left lying around as a .fw.
+// signed .avm is not left lying around as a .fw. The caller removes it; it is
+// also removed should nh exit on an interrupt before the caller can.
 func signedTempPath(format firmware.Format) (string, error) {
 	out, err := os.CreateTemp("", "nh-signed-*"+format.Extension())
 	if err != nil {
 		return "", fmt.Errorf("creating temporary file: %w", err)
 	}
 	out.Close()
+	interrupt.RemoveOnExit(out.Name())
 	return out.Name(), nil
 }
 
@@ -722,6 +725,9 @@ func signFirmware(ctx context.Context, inPath, privateKey string) (string, error
 	if err != nil {
 		return "", fmt.Errorf("creating temporary key file: %w", err)
 	}
+	// The deferred remove runs when Ctrl-C cancels ctx, which kills fwup; the
+	// registration covers nh exiting before signing returns.
+	defer interrupt.RemoveOnExit(keyFile.Name())()
 	defer os.Remove(keyFile.Name())
 	if _, err := keyFile.WriteString(privateKey + "\n"); err != nil {
 		keyFile.Close()

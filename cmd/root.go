@@ -22,11 +22,16 @@ THE SOFTWARE.
 package cmd
 
 import (
+	"context"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/nerves-hub/nh/internal/config"
+	"github.com/nerves-hub/nh/internal/interrupt"
+	"github.com/nerves-hub/nh/internal/mix"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 // rootCmd represents the base command when called without any subcommands.
@@ -81,12 +86,65 @@ authenticate.`,
 	},
 }
 
+// interruptGrace is how long a command has, after Ctrl-C or SIGTERM, to stop
+// on its own and run its deferred cleanup before nh exits regardless. Killing
+// a subprocess and removing temporary files takes milliseconds; the wait is
+// felt only at a prompt, which does not see the cancellation.
+const interruptGrace = time.Second
+
 // Execute adds all child commands to the root command and sets flags appropriately.
 // This is called by main.main(). It only needs to happen once to the rootCmd.
+//
+// The first Ctrl-C or SIGTERM cancels the command's context rather than
+// killing the process, so subprocesses (fwup, espsecure, mix) are killed and
+// deferred cleanup, such as removing a decrypted signing key, runs. A command
+// that has not stopped within interruptGrace, or a second Ctrl-C, ends the
+// process, after removing the files registered with interrupt.RemoveOnExit
+// and restoring the terminal a password prompt may have left without echo.
 func Execute() {
-	if err := rootCmd.Execute(); err != nil {
-		os.Exit(1)
+	restoreTerminal := saveTerminalState(os.Stdin)
+	sig, err := interrupt.Run(context.Background(), interrupt.Options{
+		Grace: interruptGrace,
+		Abandon: func(sig os.Signal) {
+			restoreTerminal()
+			os.Exit(interrupt.ExitCode(sig))
+		},
+	}, func(ctx context.Context) error {
+		mix.SetContext(ctx)
+		return rootCmd.ExecuteContext(ctx)
+	})
+	if code := exitCode(sig, err); code != 0 {
+		os.Exit(code)
 	}
+}
+
+// exitCode is nh's exit status: 0 on success, the shell's code for the signal
+// when an interrupted command failed (130 for Ctrl-C), and 1 otherwise. A
+// command that handles the interrupt itself and returns nil, as `device logs
+// --follow` does, still exits 0.
+func exitCode(sig os.Signal, err error) int {
+	switch {
+	case err == nil:
+		return 0
+	case sig != nil:
+		return interrupt.ExitCode(sig)
+	default:
+		return 1
+	}
+}
+
+// saveTerminalState records f's terminal state, when it is a terminal, and
+// returns a func that puts it back.
+func saveTerminalState(f *os.File) (restore func()) {
+	fd := int(f.Fd())
+	if !term.IsTerminal(fd) {
+		return func() {}
+	}
+	state, err := term.GetState(fd)
+	if err != nil {
+		return func() {}
+	}
+	return func() { _ = term.Restore(fd, state) }
 }
 
 func init() {
