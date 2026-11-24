@@ -171,8 +171,12 @@ func runArchiveUpload(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// archiveRequiredMeta are the metadata keys NervesHub needs in an archive:
-// NervesHub.Fwup.metadata/1 refuses a file without them.
+// archiveRequiredMeta are the metadata keys NervesHub needs in an archive.
+// Archive.create_changeset does not require product, but the upload never gets
+// that far without it: Archives.create reads the file with
+// NervesHub.Fwup.metadata/1 first, which builds an UpdateTool.Metadata struct
+// whose @enforce_keys are architecture, platform, product, uuid and version,
+// and answers 422 (:invalid_metadata) when any is missing.
 var archiveRequiredMeta = []string{"product", "platform", "architecture", "uuid", "version"}
 
 // reviewArchive reads the archive's metadata with fwup, refuses one NervesHub
