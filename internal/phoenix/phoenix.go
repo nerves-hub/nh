@@ -29,9 +29,11 @@ package phoenix
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/coder/websocket"
 )
@@ -63,17 +65,57 @@ type Message struct {
 }
 
 // Conn is a Phoenix Channels v2 client over a single websocket. Sends are
-// serialized internally; a single goroutine should own Receive.
+// serialized internally; a single goroutine should own Receive (and
+// JoinAndWait, which reads too).
 type Conn struct {
 	ws  *websocket.Conn
 	mu  sync.Mutex // serializes writes and ref allocation
 	ref int64
+
+	// pending holds frames that arrived while JoinAndWait waited for its
+	// reply, so Receive can hand them out in order afterwards. Only the
+	// reading goroutine touches it.
+	pending []Message
 }
+
+// DialError is returned when the server answers the websocket upgrade with an
+// HTTP status instead of switching protocols. Phoenix answers 403 when the
+// socket's connect/3 refuses the connection, for example over a bad token.
+type DialError struct {
+	StatusCode int
+	Err        error
+}
+
+func (e *DialError) Error() string {
+	return fmt.Sprintf("phoenix: dialing: the server refused the websocket with HTTP %d", e.StatusCode)
+}
+
+func (e *DialError) Unwrap() error { return e.Err }
+
+// JoinError is returned when the server answers a phx_join with an error
+// reply. Reason is the reply's response.reason, when it has one.
+type JoinError struct {
+	Topic  string
+	Reason string
+}
+
+func (e *JoinError) Error() string {
+	if e.Reason == "" {
+		return fmt.Sprintf("phoenix: joining %s was refused", e.Topic)
+	}
+	return fmt.Sprintf("phoenix: joining %s was refused: %s", e.Topic, e.Reason)
+}
+
+// ErrJoinTimeout is returned when no reply to a phx_join arrives in time.
+var ErrJoinTimeout = errors.New("phoenix: timed out waiting for the join reply")
 
 // Dial opens a websocket to rawURL and returns a Phoenix connection.
 func Dial(ctx context.Context, rawURL string) (*Conn, error) {
-	ws, _, err := websocket.Dial(ctx, rawURL, nil)
+	ws, resp, err := websocket.Dial(ctx, rawURL, nil)
 	if err != nil {
+		if resp != nil && resp.StatusCode != 0 && resp.StatusCode != 101 {
+			return nil, &DialError{StatusCode: resp.StatusCode, Err: err}
+		}
 		return nil, fmt.Errorf("phoenix: dialing: %w", err)
 	}
 	ws.SetReadLimit(readLimit)
@@ -99,7 +141,8 @@ func (c *Conn) CloseNow() error {
 // Join sends a phx_join for topic and returns the join ref. As in the Phoenix
 // JS client, the join frame's join_ref and ref are the same value, and that
 // value identifies the channel on later pushes. The reply arrives
-// asynchronously via Receive; callers that care can match it by ref.
+// asynchronously via Receive; callers that care can match it by ref, or use
+// JoinAndWait, which does.
 func (c *Conn) Join(ctx context.Context, topic string, payload any) (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -108,6 +151,59 @@ func (c *Conn) Join(ctx context.Context, topic string, payload any) (string, err
 		return "", err
 	}
 	return ref, nil
+}
+
+// JoinAndWait sends a phx_join for topic and waits up to timeout for the
+// server's reply. It returns the join ref when the server accepts the join, a
+// *JoinError when it refuses, and an error wrapping ErrJoinTimeout when no
+// reply comes in time.
+//
+// Frames that arrive before the reply are kept and returned by later Receive
+// calls, in order, so nothing the server sends early is lost. Like Receive, it
+// must not run concurrently with another reader.
+func (c *Conn) JoinAndWait(ctx context.Context, topic string, payload any, timeout time.Duration) (string, error) {
+	ref, err := c.Join(ctx, topic, payload)
+	if err != nil {
+		return "", err
+	}
+
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	for {
+		msg, err := c.read(waitCtx)
+		if err != nil {
+			// The websocket library closes the connection when a read's
+			// context ends, so a timeout leaves nothing to resume.
+			if ctx.Err() == nil && errors.Is(waitCtx.Err(), context.DeadlineExceeded) {
+				return "", fmt.Errorf("%w for %s after %s", ErrJoinTimeout, topic, timeout)
+			}
+			return "", err
+		}
+		if msg.Event == EventReply && msg.Topic == topic && msg.Ref == ref {
+			return ref, joinReplyError(topic, msg.Payload)
+		}
+		c.pending = append(c.pending, msg)
+	}
+}
+
+// joinReplyError reads a phx_reply payload, {"status": ..., "response": ...},
+// and returns nil for "ok" or a *JoinError otherwise.
+func joinReplyError(topic string, payload json.RawMessage) error {
+	var reply struct {
+		Status   string          `json:"status"`
+		Response json.RawMessage `json:"response"`
+	}
+	if err := json.Unmarshal(payload, &reply); err != nil {
+		return fmt.Errorf("phoenix: decoding the join reply for %s: %w", topic, err)
+	}
+	if reply.Status == "ok" {
+		return nil
+	}
+	var response struct {
+		Reason string `json:"reason"`
+	}
+	_ = json.Unmarshal(reply.Response, &response)
+	return &JoinError{Topic: topic, Reason: response.Reason}
 }
 
 // Push sends an event on a joined channel, using its join ref, and returns the
@@ -130,8 +226,19 @@ func (c *Conn) Heartbeat(ctx context.Context) error {
 	return c.writeLocked(ctx, "", ref, TopicPhoenix, EventHeartbeat, struct{}{})
 }
 
-// Receive reads and decodes the next frame.
+// Receive returns the next frame: first any kept back by JoinAndWait, then
+// frames read from the websocket.
 func (c *Conn) Receive(ctx context.Context) (Message, error) {
+	if len(c.pending) > 0 {
+		msg := c.pending[0]
+		c.pending = c.pending[1:]
+		return msg, nil
+	}
+	return c.read(ctx)
+}
+
+// read reads and decodes one frame from the websocket.
+func (c *Conn) read(ctx context.Context) (Message, error) {
 	_, data, err := c.ws.Read(ctx)
 	if err != nil {
 		return Message{}, err

@@ -45,11 +45,41 @@ Results are paginated; use --page and --page-size to navigate. When omitted,
 the server's defaults apply.
 
 Use --sort to order the results, e.g. --sort identifier or
---sort identifier:desc. The direction is optional and defaults to asc.
+--sort identifier:desc. The direction is optional and defaults to asc. The
+columns are identifier, connection_established_at, connection_last_seen_at
+and tags.
 
 Use --filter key:value to narrow the results; repeat it for multiple filters,
-e.g. --filter connection:not_seen --filter tag:prod. Filters are passed
-through to the API as-is, so any server-supported filter works.
+e.g. --filter connection:not_seen --filter tags:prod. The keys are:
+
+  connection          connected, disconnected, not_seen, offline,
+                      not_seen_in_seven_days, not_seen_in_fourteen_days
+  connection_type     cellular, ethernet, wifi, unknown
+  health_status       healthy, warning, unhealthy, unknown
+  updates             enabled, disabled, updating, automatic, device-managed,
+                      penalty-box, failed-updates
+  firmware_validation_status
+                      validated, not_validated, unknown
+  alarm_status        with, without
+  alarm, firmware_version
+                      any text
+  state               attention, online, updating, offline
+  reason              unhealthy, failing, not_seen
+  display_deleted     exclude (default), include, only
+  has_no_tags         true
+  tags                tags, comma-separated; a device needs all of them, each
+                      matched as part of a tag (prod matches production)
+  identifier, search  text to look for in the identifier, or in any text field
+  platform, signer_ca exact values
+  deployment_id       a deployment group's numeric ID
+  metrics_key, metrics_value, metrics_operator
+                      a custom metric's latest reading compared with a number;
+                      the operator is gt (default) or lt
+  advanced_query      the same as --query
+
+The keys from connection down to alarm take several comma-separated values
+and match any of them. nh rejects keys and values the server would ignore,
+since it would otherwise list every device as if they all matched.
 
 Use --query for the advanced query language from the web UI's search bar.
 Values are quoted strings, except metric:<key> values, which are bare
@@ -98,13 +128,14 @@ request, and a server that passes it isn't checked again for a day.`,
 func init() {
 	deviceListCmd.Flags().Int("page", 0, "page number to fetch")
 	deviceListCmd.Flags().Int("page-size", 0, "number of devices per page")
-	deviceListCmd.Flags().String("sort", "", "sort by column, e.g. identifier or identifier:desc")
-	deviceListCmd.Flags().StringArray("filter", nil, "filter results as key:value; repeatable, e.g. --filter connection:not_seen")
+	deviceListCmd.Flags().String("sort", "", "sort by column, e.g. identifier or identifier:desc (see --help for the columns)")
+	deviceListCmd.Flags().StringArray("filter", nil, "filter results as key:value; repeatable, e.g. --filter tags:prod (see --help for the keys)")
 	deviceListCmd.Flags().StringP("query", "q", "", `advanced query expression, e.g. 'metric:cpu_temp > 70'`)
 	deviceCmd.AddCommand(deviceListCmd)
 }
 
-// parseFilters turns repeated "key:value" flag values into a map.
+// parseFilters turns repeated "key:value" flag values into a map, checked
+// against the filters the server applies.
 func parseFilters(raw []string) (map[string]string, error) {
 	if len(raw) == 0 {
 		return nil, nil
@@ -122,18 +153,25 @@ func parseFilters(raw []string) (map[string]string, error) {
 		case value == "":
 			return nil, fmt.Errorf("invalid --filter %q: missing value", f)
 		}
+		if _, dup := filters[key]; dup {
+			return nil, fmt.Errorf("--filter %s is given more than once: only one value per key is sent; give several as one comma-separated value, e.g. --filter %s:a,b", key, key)
+		}
 		filters[key] = value
 	}
-	return filters, nil
+	return api.PrepareDeviceFilters(filters)
 }
 
 // parseSort splits a --sort value of the form "column" or "column:direction".
-// The direction is optional and defaults to "asc"; it must be "asc" or "desc".
+// The column must be one the server sorts by. The direction is optional and
+// defaults to "asc"; it must be "asc" or "desc".
 func parseSort(s string) (column, direction string, err error) {
 	column, direction, hasDir := strings.Cut(s, ":")
 	column = strings.TrimSpace(column)
 	if column == "" {
 		return "", "", errors.New("--sort requires a column name, e.g. --sort identifier")
+	}
+	if err := api.ValidateDeviceSort(column); err != nil {
+		return "", "", err
 	}
 	if !hasDir || strings.TrimSpace(direction) == "" {
 		return column, "asc", nil

@@ -3,6 +3,7 @@ package phoenix
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -203,5 +204,113 @@ func TestIsCleanClose(t *testing.T) {
 	}
 	if !IsCleanClose(err) {
 		t.Errorf("normal closure should be clean, got %v", err)
+	}
+}
+
+// sendFrame writes a frame with exact refs, as a server replying to a join
+// does, rather than allocating a fresh ref like Push.
+func sendFrame(ctx context.Context, c *Conn, joinRef, ref, topic, event string, payload any) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.writeLocked(ctx, joinRef, ref, topic, event, payload)
+}
+
+// joinServer answers the first phx_join it receives by calling reply with the
+// join frame, then keeps reading until the client goes away.
+func joinServer(t *testing.T, reply func(ctx context.Context, server *Conn, join Message)) *Conn {
+	t.Helper()
+	return dialTestConn(t, func(ctx context.Context, server *Conn) {
+		for {
+			msg, err := server.Receive(ctx)
+			if err != nil {
+				return
+			}
+			if msg.Event == EventJoin {
+				reply(ctx, server, msg)
+			}
+		}
+	})
+}
+
+// The console and local-shell channels answer
+// {:error, %{reason: "unauthorized"}} when the user may not use the device.
+func TestJoinAndWaitRefused(t *testing.T) {
+	conn := joinServer(t, func(ctx context.Context, server *Conn, join Message) {
+		_ = sendFrame(ctx, server, join.JoinRef, join.Ref, join.Topic, EventReply,
+			map[string]any{"status": "error", "response": map[string]string{"reason": "unauthorized"}})
+	})
+
+	_, err := conn.JoinAndWait(context.Background(), "user:console:identifier-dev-1", struct{}{}, 2*time.Second)
+	var joinErr *JoinError
+	if !errors.As(err, &joinErr) {
+		t.Fatalf("want a *JoinError, got %v", err)
+	}
+	if joinErr.Reason != "unauthorized" || joinErr.Topic != "user:console:identifier-dev-1" {
+		t.Errorf("join error: %+v", joinErr)
+	}
+}
+
+// Frames that arrive before the join reply, including replies to other refs,
+// are kept for Receive rather than dropped.
+func TestJoinAndWaitKeepsEarlyFrames(t *testing.T) {
+	conn := joinServer(t, func(ctx context.Context, server *Conn, join Message) {
+		_ = sendFrame(ctx, server, "", "99", TopicPhoenix, EventReply, map[string]any{"status": "ok", "response": map[string]any{}})
+		_ = sendFrame(ctx, server, join.JoinRef, "", join.Topic, "up", map[string]string{"data": "early"})
+		_ = sendFrame(ctx, server, join.JoinRef, join.Ref, join.Topic, EventReply, map[string]any{"status": "ok", "response": map[string]any{}})
+		_ = sendFrame(ctx, server, join.JoinRef, "", join.Topic, "up", map[string]string{"data": "late"})
+	})
+
+	ctx := context.Background()
+	joinRef, err := conn.JoinAndWait(ctx, "user:console:identifier-dev-1", struct{}{}, 2*time.Second)
+	if err != nil {
+		t.Fatalf("JoinAndWait: %v", err)
+	}
+	if joinRef == "" {
+		t.Fatal("empty join ref")
+	}
+
+	var got []string
+	for len(got) < 3 {
+		msg, err := conn.Receive(ctx)
+		if err != nil {
+			t.Fatalf("Receive: %v", err)
+		}
+		var p struct {
+			Data string `json:"data"`
+		}
+		_ = json.Unmarshal(msg.Payload, &p)
+		got = append(got, msg.Event+":"+p.Data)
+	}
+	want := []string{EventReply + ":", "up:early", "up:late"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("frame %d: got %q, want %q (all: %v)", i, got[i], want[i], got)
+		}
+	}
+}
+
+func TestJoinAndWaitTimesOut(t *testing.T) {
+	conn := joinServer(t, func(context.Context, *Conn, Message) {})
+
+	_, err := conn.JoinAndWait(context.Background(), "user:console:identifier-dev-1", struct{}{}, 50*time.Millisecond)
+	if !errors.Is(err, ErrJoinTimeout) {
+		t.Fatalf("want ErrJoinTimeout, got %v", err)
+	}
+}
+
+// Phoenix answers 403 when the socket's connect/3 refuses the token.
+func TestDialRefused(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	t.Cleanup(srv.Close)
+
+	_, err := Dial(context.Background(), "ws"+srv.URL[len("http"):])
+	var dialErr *DialError
+	if !errors.As(err, &dialErr) {
+		t.Fatalf("want a *DialError, got %v", err)
+	}
+	if dialErr.StatusCode != http.StatusForbidden {
+		t.Errorf("status: got %d, want 403", dialErr.StatusCode)
 	}
 }

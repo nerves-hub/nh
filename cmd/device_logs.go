@@ -139,7 +139,12 @@ func runDeviceLogs(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	if len(lines) == 0 && !printer.json {
+	if len(lines) == 0 {
+		if printer.json {
+			// Always an array, even an empty one, so a script can parse the
+			// output without special-casing "nothing found".
+			return printJSON(printer.w, []api.LogLine{})
+		}
 		fmt.Fprintf(printer.w, "No log lines found for device %s.\n", identifier)
 		return nil
 	}
@@ -162,11 +167,6 @@ func followDeviceLogs(cmd *cobra.Command, client *api.Client, printer *logPrinte
 	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt)
 	defer stop()
 
-	pageSize := filter.Limit
-	if pageSize == 0 {
-		pageSize = serverDefaultLimit
-	}
-
 	initial := filter
 	initial.Order = "desc"
 	lines, err := client.ListDeviceLogs(ctx, org, product, identifier, initial)
@@ -187,10 +187,20 @@ func followDeviceLogs(cmd *cobra.Command, client *api.Client, printer *logPrinte
 		cursor.last = time.Now().UTC()
 	}
 
+	// `since` is inclusive, so every poll returns the newest line already
+	// printed. A page of one could then never move past it, so polls ask for
+	// at least two.
+	pageSize := filter.Limit
+	if pageSize == 0 {
+		pageSize = serverDefaultLimit
+	}
+	pageSize = max(pageSize, 2)
+
 	for {
 		poll := filter
 		poll.Order = "asc"
 		poll.Before = ""
+		poll.Limit = pageSize
 		poll.Since = cursor.last.UTC().Format(time.RFC3339Nano)
 
 		lines, err := client.ListDeviceLogs(ctx, org, product, identifier, poll)
@@ -204,9 +214,11 @@ func followDeviceLogs(cmd *cobra.Command, client *api.Client, printer *logPrinte
 		}
 		cursor.advance(fresh)
 
-		// A full page means there is probably more waiting, so catch up
-		// immediately instead of pacing behind the interval.
-		if len(lines) >= pageSize {
+		// A full page that moved the cursor means there is probably more
+		// waiting, so catch up immediately instead of pacing behind the
+		// interval. A full page of lines already printed, such as more lines
+		// at one timestamp than fit a page, would otherwise spin.
+		if len(lines) >= pageSize && len(fresh) > 0 {
 			continue
 		}
 

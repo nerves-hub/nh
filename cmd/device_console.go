@@ -28,8 +28,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/nerves-hub/nh/internal/config"
@@ -43,11 +45,17 @@ const (
 	consoleHeartbeatInterval = 30 * time.Second
 	// consoleQuitByte is Ctrl-C, which disconnects the local session.
 	consoleQuitByte = 0x03
+	// consoleJoinTimeout bounds the wait for the server to accept the channel
+	// join. It matches the Phoenix JS client's default push timeout.
+	consoleJoinTimeout = 10 * time.Second
+	// productKeyPrefix marks a product API key, which the user socket refuses.
+	productKeyPrefix = "nhpk_"
 )
 
 // terminalProtocol captures the channel events and resize payload for an
 // interactive session. The console and local-shell channels differ in these.
 type terminalProtocol struct {
+	name          string // what the session is, for messages: "console"
 	outputEvent   string // device -> user
 	inputEvent    string // user -> device
 	resizeEvent   string // user -> device
@@ -56,6 +64,7 @@ type terminalProtocol struct {
 
 var (
 	consoleProtocol = terminalProtocol{
+		name:        "console",
 		outputEvent: "up",
 		inputEvent:  "dn",
 		resizeEvent: "window_size",
@@ -64,6 +73,7 @@ var (
 		},
 	}
 	shellProtocol = terminalProtocol{
+		name:        "shell",
 		outputEvent: "output",
 		inputEvent:  "input",
 		resizeEvent: "window_size",
@@ -123,16 +133,11 @@ func runDeviceTerminalSession(cmd *cobra.Command, topic, label string, proto ter
 	ctx, cancel := context.WithCancel(cmd.Context())
 	defer cancel()
 
-	conn, err := phoenix.Dial(ctx, socketURL)
+	conn, joinRef, err := openTerminalChannel(ctx, socketURL, cfg.Token, topic, label, proto.name, consoleJoinTimeout)
 	if err != nil {
 		return err
 	}
 	defer conn.CloseNow()
-
-	joinRef, err := conn.Join(ctx, topic, struct{}{})
-	if err != nil {
-		return err
-	}
 
 	fmt.Fprintf(cmd.ErrOrStderr(), "Connected to %s. Press Ctrl-C to disconnect.\n", label)
 
@@ -175,6 +180,62 @@ func runDeviceTerminalSession(cmd *cobra.Command, topic, label string, proto ter
 		return nil
 	}
 	return err
+}
+
+// openTerminalChannel dials the user socket and joins topic, waiting for the
+// server to accept the join so a refusal is reported before the terminal goes
+// into raw mode rather than leaving a silent, dead session.
+func openTerminalChannel(ctx context.Context, socketURL, token, topic, label, name string, joinTimeout time.Duration) (*phoenix.Conn, string, error) {
+	conn, err := phoenix.Dial(ctx, socketURL)
+	if err != nil {
+		return nil, "", terminalDialError(err, token, name)
+	}
+
+	joinRef, err := conn.JoinAndWait(ctx, topic, struct{}{}, joinTimeout)
+	if err != nil {
+		_ = conn.CloseNow()
+		return nil, "", terminalJoinError(err, label, name)
+	}
+	return conn, joinRef, nil
+}
+
+// terminalDialError explains a websocket the server would not open. The user
+// socket refuses any token that is not a user API token with a 403.
+func terminalDialError(err error, token, name string) error {
+	var dialErr *phoenix.DialError
+	if !errors.As(err, &dialErr) {
+		return err
+	}
+	switch dialErr.StatusCode {
+	case http.StatusForbidden, http.StatusUnauthorized:
+		if strings.HasPrefix(token, productKeyPrefix) {
+			return fmt.Errorf("cannot open a %s with a product API key (%s...): the server only accepts user tokens here; run `nh user auth` or set NERVES_HUB_TOKEN to a user token", name, productKeyPrefix)
+		}
+		return fmt.Errorf("the server refused the %s connection (HTTP %d): the token is invalid, expired or revoked; run `nh user auth` to sign in again", name, dialErr.StatusCode)
+	default:
+		return fmt.Errorf("the server refused the %s connection with HTTP %d", name, dialErr.StatusCode)
+	}
+}
+
+// terminalJoinError explains a channel join the server refused or never
+// answered.
+func terminalJoinError(err error, label, name string) error {
+	var joinErr *phoenix.JoinError
+	switch {
+	case errors.As(err, &joinErr) && joinErr.Reason == "unauthorized":
+		// The channels give the one reason for every refusal, so name them all.
+		return fmt.Errorf("the server refused the %s for device %s (unauthorized): the device does not exist, your role in its org does not allow a %s, or the org requires two-factor authentication you have not set up", name, label, name)
+	case errors.As(err, &joinErr):
+		reason := joinErr.Reason
+		if reason == "" {
+			reason = "no reason given"
+		}
+		return fmt.Errorf("the server refused the %s for device %s: %s", name, label, reason)
+	case errors.Is(err, phoenix.ErrJoinTimeout):
+		return fmt.Errorf("the server did not answer the request to open a %s for device %s: %w", name, label, err)
+	default:
+		return err
+	}
 }
 
 // consoleReadLoop forwards device output to the local terminal.

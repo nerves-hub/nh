@@ -209,6 +209,27 @@ func TestDeviceLogsEmpty(t *testing.T) {
 	}
 }
 
+// With -o json an empty result is still a JSON array, so scripts can parse it.
+func TestDeviceLogsEmptyJSON(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	defer srv.Close()
+
+	out, err := execCmd(t, "",
+		"device", "logs", "dev1",
+		"--org", "acme", "--product", "thermostat",
+		"--uri", srv.URL, "--token", "tok", "-o", "json",
+	)
+	if err != nil {
+		t.Fatalf("logs: %v", err)
+	}
+	if strings.TrimSpace(out) != "[]" {
+		t.Errorf("want [], got:\n%s", out)
+	}
+}
+
 // Bad filters are rejected locally, without troubling the server.
 func TestDeviceLogsRejectsBadFilters(t *testing.T) {
 	cases := []struct {
@@ -495,5 +516,57 @@ func TestDeviceLogsFollowKeepsSearchOnPolls(t *testing.T) {
 		if got := query.Get("search"); got != "sensor bus" {
 			t.Errorf("request %d dropped the search filter: search=%q", i, got)
 		}
+	}
+}
+
+// With --limit 1 a poll's one line is always the boundary one, which would
+// never move the cursor. Polls ask for at least two, and a page that brought
+// nothing new waits for the interval rather than spinning.
+func TestDeviceLogsFollowLimitOne(t *testing.T) {
+	initial := `{"data":[{"timestamp":"2026-08-16T09:14:00.000000Z","level":"info","message":"boundary"}]}`
+	poll := `{"data":[
+	  {"timestamp":"2026-08-16T09:14:00.000000Z","level":"info","message":"boundary"},
+	  {"timestamp":"2026-08-16T09:15:00.000000Z","level":"info","message":"newer"}
+	]}`
+	srv, queries := followServer(t, initial, poll, poll)
+
+	out := runFollow(t, srv.URL, 200*time.Millisecond, "--limit", "1")
+
+	if !strings.Contains(out, "newer") {
+		t.Errorf("the line after the boundary was never printed:\n%s", out)
+	}
+	if n := strings.Count(out, "boundary"); n != 1 {
+		t.Errorf("boundary line printed %d times, want 1:\n%s", n, out)
+	}
+	q := queries()
+	if len(q) < 2 {
+		t.Fatalf("expected a poll, got %d requests", len(q))
+	}
+	if got := q[0].Get("limit"); got != "1" {
+		t.Errorf("initial limit = %q, want 1", got)
+	}
+	if got := q[1].Get("limit"); got != "2" {
+		t.Errorf("poll limit = %q, want 2", got)
+	}
+	// 200ms at a 20ms interval is about ten polls; a spinning loop makes
+	// thousands.
+	if len(q) > 30 {
+		t.Errorf("%d requests in 200ms: polling is not waiting for the interval", len(q))
+	}
+}
+
+// A full page of lines that were all printed already (more lines at one
+// timestamp than fit a page) must wait for the interval, not spin.
+func TestDeviceLogsFollowFullPageOfSeenLinesWaits(t *testing.T) {
+	page := `{"data":[
+	  {"timestamp":"2026-08-16T09:14:00.000000Z","level":"info","message":"a"},
+	  {"timestamp":"2026-08-16T09:14:00.000000Z","level":"info","message":"b"}
+	]}`
+	srv, queries := followServer(t, page)
+
+	_ = runFollow(t, srv.URL, 200*time.Millisecond, "--limit", "2")
+
+	if n := len(queries()); n > 30 {
+		t.Errorf("%d requests in 200ms: polling is not waiting for the interval", n)
 	}
 }
