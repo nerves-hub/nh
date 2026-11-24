@@ -9,6 +9,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -132,10 +134,17 @@ func TestSignFirmwareCancelledRemovesTempFiles(t *testing.T) {
 
 	// A fwup that records it has started, then hangs. The sleep is a child
 	// that keeps fwup's stderr pipe open after fwup is killed, so signing
-	// returns promptly only because of WaitDelay.
+	// returns promptly only because of WaitDelay. It sleeps far longer than
+	// the test allows, so waiting on it can't pass for a slow machine, and is
+	// killed when the test ends.
 	dir := t.TempDir()
 	started := filepath.Join(dir, "started")
-	script := "#!/bin/sh\ntouch '" + started + "'\nsleep 5\n"
+	childPID := filepath.Join(dir, "child.pid")
+	script := "#!/bin/sh\n" +
+		"sleep 30 &\n" +
+		"echo $! > '" + childPID + "'\n" +
+		"touch '" + started + "'\n" +
+		"wait\n"
 	stub := filepath.Join(dir, "fwup")
 	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
@@ -143,17 +152,31 @@ func TestSignFirmwareCancelledRemovesTempFiles(t *testing.T) {
 	old := fwupBin
 	fwupBin = stub
 	t.Cleanup(func() { fwupBin = old })
+	t.Cleanup(func() {
+		raw, err := os.ReadFile(childPID)
+		if err != nil {
+			return
+		}
+		if pid, err := strconv.Atoi(strings.TrimSpace(string(raw))); err == nil {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
+	})
 
 	in := filepath.Join(dir, "image.fw")
 	if err := os.WriteFile(in, []byte(fwupTestData), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
+	// Cancel once fwup has started. Starting it can take seconds on a loaded
+	// machine, so time only what follows the cancel.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	cancelled := make(chan time.Time, 1)
 	go func() {
-		for range 500 {
+		deadline := time.Now().Add(20 * time.Second)
+		for time.Now().Before(deadline) && ctx.Err() == nil {
 			if _, err := os.Stat(started); err == nil {
+				cancelled <- time.Now()
 				cancel()
 				return
 			}
@@ -161,17 +184,19 @@ func TestSignFirmwareCancelledRemovesTempFiles(t *testing.T) {
 		}
 	}()
 
-	begin := time.Now()
 	out, err := signFirmware(ctx, in, "not-a-real-key")
+	returned := time.Now()
 	if err == nil {
 		os.Remove(out)
 		t.Fatal("signing should fail when cancelled")
 	}
-	if _, statErr := os.Stat(started); statErr != nil {
-		t.Fatalf("fwup never started: %v", statErr)
-	}
-	if d := time.Since(begin); d > 3*time.Second {
-		t.Errorf("cancelling took %s; signing waited on fwup's child", d)
+	select {
+	case at := <-cancelled:
+		if d := returned.Sub(at); d > 3*time.Second {
+			t.Errorf("signing took %s to return after cancelling; it waited on fwup's child", d)
+		}
+	default:
+		t.Fatal("fwup never started")
 	}
 
 	left, _ := filepath.Glob(filepath.Join(tmp, "nh-*"))
