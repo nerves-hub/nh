@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -43,5 +44,15 @@ func TestUserAuthPipedEmailAndPassword(t *testing.T) {
 	}
 	if !strings.Contains(gotBody, `"email":"me@x"`) || !strings.Contains(gotBody, `"password":"secret"`) {
 		t.Errorf("request body should carry both values, got %s", gotBody)
+	}
+}
+
+type stuckReader struct{}
+
+func (stuckReader) Read([]byte) (int, error) { return 0, nil }
+
+func TestReadLineGivesUpOnStuckReader(t *testing.T) {
+	if _, err := readLine(stuckReader{}); !errors.Is(err, io.ErrNoProgress) {
+		t.Errorf("want io.ErrNoProgress, got %v", err)
 	}
 }

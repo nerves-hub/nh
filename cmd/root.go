@@ -62,9 +62,11 @@ authenticate.`,
 		// A token given by flag or environment is used as is: the user chose
 		// to pair it with this URI. The saved token is only used with the
 		// server that issued it, so it never leaks to another host.
-		token := flagValue(cmd, "token", "")
+		var token string
 		var tokenErr error
-		if token == "" {
+		if cmd.Flags().Changed("token") || config.Env("TOKEN") != "" {
+			token = flagValue(cmd, "token", "")
+		} else {
 			token, tokenErr = settings.TokenFor(uri)
 		}
 

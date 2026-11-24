@@ -42,8 +42,9 @@ var migrateCmd = &cobra.Command{
 nh reads the old CLI's data directory (default ~/.nerves-hub, or
 $NERVES_HUB_HOME) and copies your saved defaults, API token, and signing keys
 into nh's own data directory. The uri and token are imported together, so the
-token is only used with the server it came from. Signing keys are re-encoded, not decrypted, so no
-key password is required and password-protected keys keep their password.
+token is only used with the server it came from. Signing keys are re-encoded,
+not decrypted, so no key password is required and password-protected keys keep
+their password.
 
 The old directory is only read, never modified. Existing nh settings and keys
 are left untouched unless you pass --force, so it is safe to run more than
@@ -173,21 +174,23 @@ func planSettings(l legacy.Config, cur *config.Settings, force bool) []settingCh
 		}
 		changes = append(changes, c)
 	}
-	if tokenIdx >= 0 {
-		var uriChange *settingChange
-		if uriIdx >= 0 {
-			uriChange = &changes[uriIdx]
-		}
-		keepServerPair(l, cur, uriChange, &changes[tokenIdx])
+	var uriChange, tokenChange *settingChange
+	if uriIdx >= 0 {
+		uriChange = &changes[uriIdx]
 	}
+	if tokenIdx >= 0 {
+		tokenChange = &changes[tokenIdx]
+	}
+	keepServerPair(l, cur, uriChange, tokenChange)
 	return changes
 }
 
 // keepServerPair skips the uri or token import when doing just one of them
 // would leave the saved token for a different server than the default uri.
+// Either change may be nil when the old config has no value for it.
 func keepServerPair(l legacy.Config, cur *config.Settings, uriChange, tokenChange *settingChange) {
 	uriImported := uriChange != nil && uriChange.Action == "import"
-	tokenImported := tokenChange.Action == "import"
+	tokenImported := tokenChange != nil && tokenChange.Action == "import"
 
 	after := *cur
 	if uriImported {

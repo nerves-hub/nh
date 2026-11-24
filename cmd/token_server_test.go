@@ -193,3 +193,14 @@ func TestConfigLoadRestoresTokenServer(t *testing.T) {
 		t.Errorf("got uri=%q token=%q err=%v", c.URI, c.Token, c.TokenErr)
 	}
 }
+
+// An explicit empty --token means "no token", not "use the saved one".
+func TestExplicitEmptyTokenFlagSkipsSavedToken(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := config.SaveToken(dir, config.DefaultURI, "nhu_saved"); err != nil {
+		t.Fatal(err)
+	}
+	if c := runRoot(t, "--data-dir", dir, "--token", ""); c.Token != "" || c.TokenErr != nil {
+		t.Errorf("got token=%q err=%v", c.Token, c.TokenErr)
+	}
+}

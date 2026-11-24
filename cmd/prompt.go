@@ -72,13 +72,16 @@ func promptLine(cmd *cobra.Command, prompt string, quiet bool) (string, error) {
 // time. It deliberately doesn't buffer: a buffered reader would swallow the
 // lines after this one, so with piped input (e.g. an email then a password)
 // the next prompt would find stdin already drained. At EOF it returns what it
-// read along with io.EOF.
+// read along with io.EOF. Like bufio, it gives up with io.ErrNoProgress after
+// many reads in a row that return no data and no error.
 func readLine(r io.Reader) (string, error) {
+	const maxEmptyReads = 100
 	var b strings.Builder
 	buf := make([]byte, 1)
-	for {
+	for empty := 0; ; {
 		n, err := r.Read(buf)
 		if n > 0 {
+			empty = 0
 			b.WriteByte(buf[0])
 			if buf[0] == '\n' {
 				return b.String(), nil
@@ -86,6 +89,11 @@ func readLine(r io.Reader) (string, error) {
 		}
 		if err != nil {
 			return b.String(), err
+		}
+		if n == 0 {
+			if empty++; empty >= maxEmptyReads {
+				return b.String(), io.ErrNoProgress
+			}
 		}
 	}
 }
