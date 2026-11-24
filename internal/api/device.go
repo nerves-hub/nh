@@ -115,8 +115,8 @@ type ListDevicesOptions struct {
 	// filters[advanced_query]. It takes precedence over an advanced_query
 	// key in Filters.
 	Query string
-	// Filters are passed through verbatim as filters[key]=value, so new
-	// server-side filters work without client changes.
+	// Filters are sent verbatim as filters[key]=value. Check them with
+	// PrepareDeviceFilters first: the server ignores keys it doesn't know.
 	Filters map[string]string
 }
 

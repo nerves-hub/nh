@@ -132,11 +132,11 @@ func TestDeviceListPagination(t *testing.T) {
 
 func TestParseSort(t *testing.T) {
 	ok := map[string]struct{ col, dir string }{
-		"identifier":              {"identifier", "asc"},
-		"identifier:asc":          {"identifier", "asc"},
-		"identifier:desc":         {"identifier", "desc"},
-		"last_communication:DESC": {"last_communication", "desc"},
-		"identifier:":             {"identifier", "asc"}, // trailing colon, no direction
+		"identifier":                   {"identifier", "asc"},
+		"identifier:asc":               {"identifier", "asc"},
+		"identifier:desc":              {"identifier", "desc"},
+		"connection_last_seen_at:DESC": {"connection_last_seen_at", "desc"},
+		"identifier:":                  {"identifier", "asc"}, // trailing colon, no direction
 	}
 	for in, want := range ok {
 		col, dir, err := parseSort(in)
@@ -149,7 +149,7 @@ func TestParseSort(t *testing.T) {
 		}
 	}
 
-	for _, in := range []string{"", ":desc", "identifier:sideways"} {
+	for _, in := range []string{"", ":desc", "identifier:sideways", "last_communication", "inserted_at:desc"} {
 		if _, _, err := parseSort(in); err == nil {
 			t.Errorf("parseSort(%q): expected error", in)
 		}
@@ -181,11 +181,11 @@ func TestDeviceListSort(t *testing.T) {
 }
 
 func TestParseFilters(t *testing.T) {
-	got, err := parseFilters([]string{"connection:not_seen", "tag:prod"})
+	got, err := parseFilters([]string{"connection:not_seen", "tags:prod"})
 	if err != nil {
 		t.Fatalf("parseFilters: %v", err)
 	}
-	if got["connection"] != "not_seen" || got["tag"] != "prod" {
+	if got["connection"] != "not_seen" || got["tags"] != "prod" {
 		t.Errorf("got %+v", got)
 	}
 
@@ -204,7 +204,7 @@ func TestDeviceListFilters(t *testing.T) {
 	var gotConnection, gotTag string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotConnection = r.URL.Query().Get("filters[connection]")
-		gotTag = r.URL.Query().Get("filters[tag]")
+		gotTag = r.URL.Query().Get("filters[tags]")
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"data":[]}`))
 	}))
@@ -214,14 +214,92 @@ func TestDeviceListFilters(t *testing.T) {
 		"device", "list",
 		"--org", "acme", "--product", "thermostat",
 		"--filter", "connection:not_seen",
-		"--filter", "tag:prod",
+		"--filter", "tags:prod",
 		"--uri", srv.URL, "--token", "tok",
 	)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	if gotConnection != "not_seen" || gotTag != "prod" {
-		t.Errorf("filter query: got filters[connection]=%q filters[tag]=%q", gotConnection, gotTag)
+		t.Errorf("filter query: got filters[connection]=%q filters[tags]=%q", gotConnection, gotTag)
+	}
+}
+
+// The server drops filter keys and values it doesn't know (and a key or sort
+// field that isn't an atom on the server is a 500), so nh refuses them before
+// asking, naming what would work.
+func TestDeviceListRejectsUnknownFilterAndSort(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{"tag", []string{"--filter", "tag:prod"}, []string{`unknown --filter key "tag"`, `did you mean "tags"`, "connection_type"}},
+		{"made-up key", []string{"--filter", "colour:red"}, []string{`"colour"`, "health_status"}},
+		{"state value", []string{"--filter", "state:onlin"}, []string{`"onlin"`, "attention, online, updating, offline"}},
+		{"multi value", []string{"--filter", "connection:connected,nope"}, []string{`"nope"`, "comma-separated"}},
+		{"deployment id", []string{"--filter", "deployment_id:prod"}, []string{"numeric ID"}},
+		{"metric without value", []string{"--filter", "metrics_key:cpu_temp"}, []string{"metrics_value"}},
+		{"metric value", []string{"--filter", "metrics_key:cpu_temp", "--filter", "metrics_value:hot"}, []string{"want a number"}},
+		{"sort", []string{"--sort", "inserted_at:desc"}, []string{`invalid --sort "inserted_at"`, "connection_last_seen_at"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			called := false
+			srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }))
+			defer srv.Close()
+
+			args := append([]string{"device", "list", "--org", "acme", "--product", "thermostat"}, tc.args...)
+			args = append(args, "--uri", srv.URL, "--token", "tok")
+			_, err := execCmd(t, "", args...)
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q should mention %q", err, want)
+				}
+			}
+			if called {
+				t.Error("no request should be made")
+			}
+		})
+	}
+}
+
+// The metric filter only applies with its key, operator and value all sent,
+// so a missing operator is filled in with the server's default.
+func TestDeviceListMetricFilterDefaultsOperator(t *testing.T) {
+	var got url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.URL.Query()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	defer srv.Close()
+
+	_, err := execCmd(t, "",
+		"device", "list",
+		"--org", "acme", "--product", "thermostat",
+		"--filter", "metrics_key:cpu_temp",
+		"--filter", "metrics_value:70.5",
+		"--filter", "connection:connected,not_seen",
+		"--sort", "connection_last_seen_at",
+		"--uri", srv.URL, "--token", "tok",
+	)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	for key, want := range map[string]string{
+		"filters[metrics_key]":      "cpu_temp",
+		"filters[metrics_value]":    "70.5",
+		"filters[metrics_operator]": "gt",
+		"filters[connection]":       "connected,not_seen",
+		"sort":                      "connection_last_seen_at",
+	} {
+		if got.Get(key) != want {
+			t.Errorf("%s = %q, want %q", key, got.Get(key), want)
+		}
 	}
 }
 
@@ -274,13 +352,13 @@ func TestDeviceListQueryCombinesWithFilters(t *testing.T) {
 	_, err := execCmd(t, "",
 		"device", "list",
 		"--org", "acme", "--product", "thermostat",
-		"--query", "metric:cpu_temp > 70", "--filter", "tag:prod",
+		"--query", "metric:cpu_temp > 70", "--filter", "tags:prod",
 		"--uri", srv.URL, "--token", "tok",
 	)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if got.Get("filters[advanced_query]") != "metric:cpu_temp > 70" || got.Get("filters[tag]") != "prod" {
+	if got.Get("filters[advanced_query]") != "metric:cpu_temp > 70" || got.Get("filters[tags]") != "prod" {
 		t.Errorf("both the query and the filter should be sent, got %v", got)
 	}
 }
