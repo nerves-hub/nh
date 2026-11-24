@@ -27,26 +27,22 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/tmc/go-iroh/endpointticket"
 	"github.com/tmc/go-iroh/iroh"
 	"github.com/tmc/go-iroh/key"
 	"github.com/tmc/go-iroh/relay"
 )
 
-// Dial connects to a device's IrohConsole using its ticket and returns the
+// Dial connects to the IrohConsole at device and returns the
 // bidirectional stream to run the console protocol over, plus a cleanup func
 // the caller must invoke (after closing the stream) to release the connection
 // and endpoint.
 //
-// It uses the relay advertised in the ticket — NervesCloud devices use a hosted
+// It uses the relay the device advertised — NervesCloud devices use a hosted
 // relay, not n0's — and forces the relay path: the device is behind NAT, direct
 // hole-punching does not complete, and mixing the two prevents the connection
 // from establishing. A console is low-bandwidth, so relaying it is fine.
-func Dial(ctx context.Context, ticket string, sk key.SecretKey, alpn string) (stream io.ReadWriteCloser, cleanup func(), err error) {
-	addr, err := endpointticket.Decode(ticket)
-	if err != nil {
-		return nil, nil, fmt.Errorf("iroh: decoding device ticket: %w", err)
-	}
+func Dial(ctx context.Context, device DeviceAddr, sk key.SecretKey, alpn string) (stream io.ReadWriteCloser, cleanup func(), err error) {
+	addr := device.addr
 
 	mode := relay.ModeDefault()
 	if urls := addr.RelayURLs(); len(urls) > 0 {

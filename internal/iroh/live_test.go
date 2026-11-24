@@ -26,15 +26,20 @@ func TestLiveIrohConsole(t *testing.T) {
 	}
 	auth := os.Getenv("NH_IROH_AUTH")
 
-	sk, err := iroh.LoadOrCreateIdentity(t.TempDir())
+	dir := t.TempDir()
+	sk, err := iroh.LoadOrCreateIdentity(dir, iroh.OrgIdentityPath(dir, "live"))
 	if err != nil {
 		t.Fatalf("identity: %v", err)
+	}
+	addr, err := iroh.DeviceAddrFromTicket(ticket)
+	if err != nil {
+		t.Fatalf("ticket: %v", err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	stream, cleanup, err := iroh.Dial(ctx, ticket, sk, irohconsole.ALPN)
+	stream, cleanup, err := iroh.Dial(ctx, addr, sk, irohconsole.ALPN)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
