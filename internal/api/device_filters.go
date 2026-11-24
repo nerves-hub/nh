@@ -25,6 +25,7 @@ package api
 import (
 	"fmt"
 	"maps"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -78,7 +79,7 @@ var deviceFilters = map[string]deviceFilter{
 	"search":           {},
 	"signer_ca":        {},
 	"state":            {values: []string{"attention", "online", "updating", "offline"}},
-	"tags":             {},
+	"tags":             {check: checkTags},
 	"updates": {multi: true, values: []string{
 		"enabled", "disabled", "updating", "automatic", "device-managed",
 		"penalty-box", "failed-updates",
@@ -148,6 +149,9 @@ func (f deviceFilter) validate(key, value string) error {
 		}
 	}
 	if f.values == nil {
+		if f.multi && strings.Trim(value, ",") == "" {
+			return fmt.Errorf("invalid --filter %s:%s: give at least one value", key, value)
+		}
 		return nil
 	}
 
@@ -156,6 +160,10 @@ func (f deviceFilter) validate(key, value string) error {
 		// Split as the server does: on commas, dropping empty choices but
 		// not trimming spaces, which would then not match.
 		choices = slices.DeleteFunc(strings.Split(value, ","), func(s string) bool { return s == "" })
+		if len(choices) == 0 {
+			// The server would apply no filter at all.
+			return fmt.Errorf("invalid --filter %s:%s: give at least one value", key, value)
+		}
 	}
 	for _, choice := range choices {
 		if !slices.Contains(f.values, choice) {
@@ -184,8 +192,34 @@ func checkDeploymentID(value string) error {
 	return nil
 }
 
+// checkTags applies the server's tag parsing (NervesHub.Types.Tag.cast/1):
+// comma-separated, trimmed, and no spaces inside a tag. A value it can't cast,
+// or one with no tags, filters nothing.
+func checkTags(value string) error {
+	n := 0
+	for _, tag := range strings.Split(value, ",") {
+		tag = strings.TrimSpace(tag)
+		if tag == "" {
+			continue
+		}
+		if strings.Contains(tag, " ") {
+			return fmt.Errorf("tags cannot contain spaces; separate tags with commas")
+		}
+		n++
+	}
+	if n == 0 {
+		return fmt.Errorf("give at least one tag")
+	}
+	return nil
+}
+
+// plainNumber is a decimal number, as the metric filter compares with. It
+// rules out what strconv.ParseFloat also accepts: NaN, Inf, hex and
+// underscores.
+var plainNumber = regexp.MustCompile(`^-?(\d+\.?\d*|\.\d+)$`)
+
 func checkMetricValue(value string) error {
-	if _, err := strconv.ParseFloat(value, 64); err != nil {
+	if !plainNumber.MatchString(value) {
 		return fmt.Errorf("want a number")
 	}
 	return nil

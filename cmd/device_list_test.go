@@ -241,6 +241,12 @@ func TestDeviceListRejectsUnknownFilterAndSort(t *testing.T) {
 		{"deployment id", []string{"--filter", "deployment_id:prod"}, []string{"numeric ID"}},
 		{"metric without value", []string{"--filter", "metrics_key:cpu_temp"}, []string{"metrics_value"}},
 		{"metric value", []string{"--filter", "metrics_key:cpu_temp", "--filter", "metrics_value:hot"}, []string{"want a number"}},
+		{"metric NaN", []string{"--filter", "metrics_key:cpu_temp", "--filter", "metrics_value:NaN"}, []string{"want a number"}},
+		{"tag with space", []string{"--filter", "tags:prod east"}, []string{"cannot contain spaces"}},
+		{"no tags", []string{"--filter", "tags: , "}, []string{"at least one tag"}},
+		{"only commas", []string{"--filter", "connection:,"}, []string{"at least one value"}},
+		{"only commas, free text", []string{"--filter", "alarm:,,"}, []string{"at least one value"}},
+		{"repeated key", []string{"--filter", "connection:connected", "--filter", "connection:not_seen"}, []string{"more than once", "connection:a,b"}},
 		{"sort", []string{"--sort", "inserted_at:desc"}, []string{`invalid --sort "inserted_at"`, "connection_last_seen_at"}},
 	}
 	for _, tc := range cases {

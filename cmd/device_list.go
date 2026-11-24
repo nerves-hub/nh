@@ -153,6 +153,9 @@ func parseFilters(raw []string) (map[string]string, error) {
 		case value == "":
 			return nil, fmt.Errorf("invalid --filter %q: missing value", f)
 		}
+		if _, dup := filters[key]; dup {
+			return nil, fmt.Errorf("--filter %s is given more than once: only one value per key is sent; give several as one comma-separated value, e.g. --filter %s:a,b", key, key)
+		}
 		filters[key] = value
 	}
 	return api.PrepareDeviceFilters(filters)
