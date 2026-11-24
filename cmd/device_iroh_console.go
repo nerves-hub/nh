@@ -52,9 +52,14 @@ var deviceIrohConsoleCmd = &cobra.Command{
 	Long: `Open an interactive IEx console to a device running an IrohConsole endpoint,
 over a peer-to-peer iroh connection.
 
-nh reads the device's iroh ticket from its reported network identities, ensures
+nh reads where to reach the device from its reported network identities, ensures
 this machine's iroh endpoint is registered with the organization (so the hosted
 relay authorizes it), connects, and bridges your terminal to the device.
+
+nh keeps one iroh key per organization in its data directory, because NervesHub
+lets a key belong to only one organization. Each is registered to you under an
+instance named for this machine ("nh-<host>-<key prefix>"), so your other
+machines register their own.
 
 Devices authenticate however their IrohConsole.Auth adapter is configured —
 supply the credential with --auth, or you will be prompted when the device
@@ -91,20 +96,19 @@ func runDeviceIrohConsole(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	sk, err := iroh.LoadOrCreateIdentity(cfg.DataDir)
+	ctx, cancel := context.WithCancel(cmd.Context())
+	defer cancel()
+
+	sk, err := iroh.EnsureOrgEndpoint(ctx, client, iroh.EndpointOptions{
+		DataDir: cfg.DataDir,
+		Org:     org,
+		Notify:  cmd.ErrOrStderr(),
+	})
 	if err != nil {
 		return err
 	}
 
-	ctx, cancel := context.WithCancel(cmd.Context())
-	defer cancel()
-
-	endpointID := iroh.EndpointIDHex(sk.Public())
-	if err := ensureIrohEndpointRegistered(ctx, cmd, client, org, endpointID); err != nil {
-		return err
-	}
-
-	ticket, err := deviceIrohTicket(ctx, client, org, product, identifier, instance)
+	addr, err := deviceIrohAddr(ctx, client, org, product, identifier, instance)
 	if err != nil {
 		return err
 	}
@@ -112,7 +116,7 @@ func runDeviceIrohConsole(cmd *cobra.Command, args []string) error {
 	stderr := cmd.ErrOrStderr()
 	fmt.Fprintf(stderr, "Connecting to %s over iroh…\n", identifier)
 
-	stream, cleanup, err := iroh.Dial(ctx, ticket, sk, irohconsole.ALPN)
+	stream, cleanup, err := iroh.Dial(ctx, addr, sk, irohconsole.ALPN)
 	if err != nil {
 		return err
 	}
@@ -127,50 +131,31 @@ func runDeviceIrohConsole(cmd *cobra.Command, args []string) error {
 	return runIrohTerminal(cmd, session, in, out, identifier)
 }
 
-// ensureIrohEndpointRegistered registers this machine's endpoint id with the
-// organization if it is not already, attaching it to the current user so the
-// hosted relay will authorize connections from it.
-func ensureIrohEndpointRegistered(ctx context.Context, cmd *cobra.Command, client *api.Client, org, endpointID string) error {
-	existing, err := client.ListIrohEndpoints(ctx, org, api.IrohEndpointFilter{Search: endpointID})
-	if err != nil {
-		return fmt.Errorf("checking iroh endpoint registration: %w", err)
-	}
-	for _, e := range existing {
-		if e.Identifier == endpointID {
-			return nil
-		}
-	}
-
-	me, err := client.CurrentUser(ctx)
-	if err != nil {
-		return fmt.Errorf("resolving your account for registration: %w", err)
-	}
-	if _, err := client.RegisterIrohEndpoint(ctx, org, api.IrohEndpointInput{
-		Identifier: endpointID,
-		UserEmail:  me.Email,
-	}); err != nil {
-		return fmt.Errorf("registering this machine's iroh endpoint with %s: %w", org, err)
-	}
-	fmt.Fprintf(cmd.ErrOrStderr(), "Registered this machine's iroh endpoint with %s.\n", org)
-	return nil
-}
-
-// deviceIrohTicket fetches the device's iroh ticket from its reported external
-// identities. The identity's identifier is the ticket used to dial it.
-func deviceIrohTicket(ctx context.Context, client *api.Client, org, product, identifier, instance string) (string, error) {
+// deviceIrohAddr works out where to dial the device's iroh console from the
+// network identity it reported for instance. See iroh.DeviceAddrFromIdentity
+// for which fields that reads.
+func deviceIrohAddr(ctx context.Context, client *api.Client, org, product, identifier, instance string) (iroh.DeviceAddr, error) {
 	ids, err := client.ListDeviceNetworkIdentities(ctx, org, product, identifier, api.DeviceNetworkIdentityFilter{
 		Service:  irohConsoleService,
 		Instance: instance,
 	})
 	if err != nil {
-		return "", err
+		return iroh.DeviceAddr{}, err
 	}
+	var firstErr error
 	for _, id := range ids {
-		if id.Identifier != "" {
-			return id.Identifier, nil
+		addr, err := iroh.DeviceAddrFromIdentity(id.Identifier, id.Details)
+		if err == nil {
+			return addr, nil
+		}
+		if firstErr == nil {
+			firstErr = err
 		}
 	}
-	return "", fmt.Errorf("device %s has not reported an iroh console endpoint (instance %q); is IrohConsole running on it?", identifier, instance)
+	if firstErr != nil {
+		return iroh.DeviceAddr{}, fmt.Errorf("device %s reported an iroh console endpoint (instance %q) that cannot be dialled: %w", identifier, instance, firstErr)
+	}
+	return iroh.DeviceAddr{}, fmt.Errorf("device %s has not reported an iroh console endpoint (instance %q); is IrohConsole running on it?", identifier, instance)
 }
 
 // irohConsoleResponder answers the device's auth challenge from --auth, or, when

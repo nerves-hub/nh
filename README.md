@@ -204,7 +204,9 @@ variable — see [Configuration](#configuration)):
 - `clear-penalty <identifier>` — clear a device's penalty box
 - `console <identifier>`, `shell <identifier>` — connect to a device's console/shell
 - `iroh-console <identifier>` — open a remote IEx console over a peer-to-peer iroh
-  connection (`--auth`, `--instance`; Ctrl-] to detach)
+  connection (`--auth`, `--instance`; Ctrl-] to detach). nh keeps one iroh key per
+  organization and registers it to you under an instance named for this machine
+  (`nh-<host>-<key prefix>`), so it works across organizations and machines
 - `logs <identifier>` — show the log lines a device has sent
   (`--level`, `--search`, `--since`, `--before`, `--limit`, `--order`, `--meta`);
   `-f`/`--follow` tails new lines by polling (`--interval`)
