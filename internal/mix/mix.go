@@ -47,6 +47,16 @@ const (
 // configurable.
 const evalTimeout = 30 * time.Second
 
+// baseCtx parents every `mix eval`, so cancelling it, as nh does on Ctrl-C or
+// SIGTERM, kills an eval that is still running.
+var baseCtx = context.Background()
+
+// SetContext makes ctx the parent of every later `mix eval`. Call it before any
+// lookups run; it is not safe to call concurrently with them.
+func SetContext(ctx context.Context) {
+	baseCtx = ctx
+}
+
 // abandoned is set once a `mix eval` times out, so the remaining lookups in
 // this process are skipped rather than each hanging for evalTimeout.
 var abandoned bool
@@ -77,7 +87,7 @@ func evalWithTimeout(expr string, timeout time.Duration) string {
 		return ""
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(baseCtx, timeout)
 	defer cancel()
 
 	out, err := execMix(ctx, expr)

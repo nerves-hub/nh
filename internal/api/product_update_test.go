@@ -64,7 +64,8 @@ func TestUpdateProductKeepsAPIError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnprocessableEntity)
-		_, _ = w.Write([]byte(`{"errors":{"allowed_update_tools":["not enabled on this NervesHub instance: atomvm"]}}`))
+		// Product.validate_allowed_update_tools/1 on an unbranded instance.
+		_, _ = w.Write([]byte(`{"errors":{"allowed_update_tools":["not enabled on NervesHub: atomvm"]}}`))
 	}))
 	defer srv.Close()
 
@@ -129,5 +130,29 @@ func TestChangeUpdateTools(t *testing.T) {
 				t.Errorf("want %q, got %q", tc.want, got)
 			}
 		})
+	}
+}
+
+// The server names the instance by its configured friendly platform name
+// (NervesHub.Branding.friendly_platform_name/0), so the hint must not depend
+// on which name that is.
+func TestNotEnabledTools(t *testing.T) {
+	cases := []struct {
+		msg            string
+		instance, list string
+		ok             bool
+	}{
+		{"not enabled on NervesHub: rauc", "NervesHub", "rauc", true},
+		{"not enabled on NervesCloud: esp-idf, rauc", "NervesCloud", "esp-idf, rauc", true},
+		{"not enabled on Acme: Fleet: atomvm", "Acme: Fleet", "atomvm", true},
+		{"unknown update tool(s): swupdate", "", "", false},
+		{"not enabled on NervesHub", "", "", false},
+	}
+	for _, tc := range cases {
+		instance, list, ok := notEnabledTools(tc.msg)
+		if instance != tc.instance || list != tc.list || ok != tc.ok {
+			t.Errorf("notEnabledTools(%q) = %q, %q, %v; want %q, %q, %v",
+				tc.msg, instance, list, ok, tc.instance, tc.list, tc.ok)
+		}
 	}
 }

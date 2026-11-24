@@ -33,6 +33,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // ESP-IDF application images: esp_image_header_t, the first segment header,
@@ -171,6 +172,9 @@ func SignESPIDF(ctx context.Context, in, keyFile, out string) error {
 	}
 
 	cmd := exec.CommandContext(ctx, bin, "sign_data", "--version", "2", "--keyfile", keyFile, "--output", out, in)
+	// espsecure.py may be a wrapper whose child holds the output pipe after
+	// cancellation kills it; don't wait on that child.
+	cmd.WaitDelay = 500 * time.Millisecond
 	var output bytes.Buffer
 	cmd.Stdout = &output
 	cmd.Stderr = &output

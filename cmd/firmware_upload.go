@@ -35,10 +35,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/nerves-hub/nh/internal/api"
 	"github.com/nerves-hub/nh/internal/config"
 	"github.com/nerves-hub/nh/internal/firmware"
+	"github.com/nerves-hub/nh/internal/interrupt"
 	"github.com/nerves-hub/nh/internal/mix"
 	"github.com/nerves-hub/nh/internal/pki"
 	"github.com/schollz/progressbar/v3"
@@ -262,18 +264,24 @@ func runFirmwareUpload(cmd *cobra.Command, args []string) error {
 
 	// Point deployment groups at the new firmware. This runs after the upload
 	// has succeeded, so a failure here leaves the firmware in place and says so.
-	updated, err := deployFirmware(cmd, client, org, product, uploaded.UUID)
-	if err != nil {
-		return err
+	// In JSON mode the progress lines go to stderr, keeping stdout one JSON
+	// document, and that document is written even when a deployment fails, so
+	// a script still learns the UUID of the firmware that did upload.
+	progress := w
+	if cfg.Output == config.OutputJSON {
+		progress = cmd.ErrOrStderr()
 	}
+	updated, deployErr := deployFirmware(cmd, progress, client, org, product, uploaded.UUID)
 
 	if cfg.Output == config.OutputJSON {
-		return printJSON(w, struct {
+		if err := printJSON(w, struct {
 			*api.Firmware
 			Deployed []string `json:"deployed,omitempty"`
-		}{Firmware: uploaded, Deployed: updated})
+		}{Firmware: uploaded, Deployed: updated}); err != nil {
+			return errors.Join(deployErr, err)
+		}
 	}
-	return nil
+	return deployErr
 }
 
 // signForUpload signs the image as its format requires, returning the path of
@@ -358,13 +366,15 @@ func signForUpload(cmd *cobra.Command, cfg *config.Config, org, path string, for
 }
 
 // signedTempPath creates an empty temporary file named for the format, so a
-// signed .avm is not left lying around as a .fw.
+// signed .avm is not left lying around as a .fw. The caller removes it; it is
+// also removed should nh exit on an interrupt before the caller can.
 func signedTempPath(format firmware.Format) (string, error) {
 	out, err := os.CreateTemp("", "nh-signed-*"+format.Extension())
 	if err != nil {
 		return "", fmt.Errorf("creating temporary file: %w", err)
 	}
 	out.Close()
+	interrupt.RemoveOnExit(out.Name())
 	return out.Name(), nil
 }
 
@@ -572,9 +582,10 @@ func confirmFirmwareUpload(cmd *cobra.Command, cfg *config.Config, path, product
 }
 
 // deployFirmware points each requested deployment group at uuid, returning the
-// groups updated. DeployFirmware creates each release with
-// POST .../releases where the server has it, and the release PUT otherwise.
-func deployFirmware(cmd *cobra.Command, client *api.Client, org, product, uuid string) ([]string, error) {
+// groups updated, and reports each one on w. DeployFirmware creates each
+// release with POST .../releases where the server has it, and the release PUT
+// otherwise.
+func deployFirmware(cmd *cobra.Command, w io.Writer, client *api.Client, org, product, uuid string) ([]string, error) {
 	names := deployTargets(cmd)
 	if len(names) == 0 {
 		return nil, nil
@@ -583,7 +594,6 @@ func deployFirmware(cmd *cobra.Command, client *api.Client, org, product, uuid s
 		return nil, errors.New("firmware uploaded, but the server returned no UUID to deploy")
 	}
 
-	w := cmd.OutOrStdout()
 	updated := make([]string, 0, len(names))
 	for _, name := range names {
 		if err := client.DeployFirmware(cmd.Context(), org, product, name, uuid); err != nil {
@@ -706,6 +716,10 @@ func decryptSigningKey(cmd *cobra.Command, cfg *config.Config, blob string) (ed2
 	return priv, err
 }
 
+// signWaitDelay bounds how long signing waits for fwup's output pipes to close
+// after fwup has been killed.
+const signWaitDelay = 500 * time.Millisecond
+
 // signFirmware signs the firmware at inPath with fwup, writing the signed
 // image to a temporary file whose path is returned. The caller is responsible
 // for removing it.
@@ -722,6 +736,9 @@ func signFirmware(ctx context.Context, inPath, privateKey string) (string, error
 	if err != nil {
 		return "", fmt.Errorf("creating temporary key file: %w", err)
 	}
+	// The deferred remove runs when Ctrl-C cancels ctx, which kills fwup; the
+	// registration covers nh exiting before signing returns.
+	defer interrupt.RemoveOnExit(keyFile.Name())()
 	defer os.Remove(keyFile.Name())
 	if _, err := keyFile.WriteString(privateKey + "\n"); err != nil {
 		keyFile.Close()
@@ -737,6 +754,9 @@ func signFirmware(ctx context.Context, inPath, privateKey string) (string, error
 	}
 
 	sign := exec.CommandContext(ctx, fwup, "--sign", "-i", inPath, "-o", outPath, "-s", keyFile.Name())
+	// Once Ctrl-C kills fwup, stop waiting on a pipe some child of it may
+	// hold open, so the key file is removed now.
+	sign.WaitDelay = signWaitDelay
 	var stderr bytes.Buffer
 	sign.Stderr = &stderr
 	if err := sign.Run(); err != nil {

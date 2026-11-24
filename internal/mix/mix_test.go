@@ -174,3 +174,32 @@ func TestEvalSuccess(t *testing.T) {
 		t.Errorf("evalWithTimeout = %q, want acme", got)
 	}
 }
+
+// A cancelled base context, as nh's Ctrl-C handling leaves it, kills a running
+// eval without reporting a timeout or abandoning later lookups.
+func TestEvalStopsWhenBaseContextIsCancelled(t *testing.T) {
+	origExec, origBase := execMix, baseCtx
+	t.Cleanup(func() { execMix = origExec; baseCtx = origBase; abandoned = false })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	SetContext(ctx)
+	execMix = func(ctx context.Context, _ string) ([]byte, error) {
+		cancel()
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+
+	var got string
+	msg := captureStderr(t, func() {
+		got = evalWithTimeout("anything", time.Minute)
+	})
+	if got != "" {
+		t.Errorf("a cancelled eval should yield empty, got %q", got)
+	}
+	if msg != "" {
+		t.Errorf("cancellation is not a timeout and should print nothing, got %q", msg)
+	}
+	if abandoned {
+		t.Error("cancellation should not abandon later lookups")
+	}
+}
