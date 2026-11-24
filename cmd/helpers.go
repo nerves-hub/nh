@@ -89,15 +89,24 @@ func userAgent() string {
 	return "nh/" + version
 }
 
+// requireToken returns an error when there's no token to send: why the saved
+// one can't be used (it's for another server), or that there's none at all.
+func requireToken(cfg *config.Config) error {
+	if cfg.Token != "" {
+		return nil
+	}
+	if cfg.TokenErr != nil {
+		return cfg.TokenErr
+	}
+	return errors.New("not authenticated: run `nh user auth` or set NERVES_HUB_TOKEN")
+}
+
 // newAuthedClient builds an API client using the resolved token, returning a
 // helpful error when no token is available so commands fail clearly rather
 // than with a 401. Extra options (e.g. a custom HTTP client) may be supplied.
 func newAuthedClient(cfg *config.Config, opts ...api.Option) (*api.Client, error) {
-	if cfg.Token == "" {
-		if cfg.TokenErr != nil {
-			return nil, cfg.TokenErr
-		}
-		return nil, errors.New("not authenticated: run `nh user auth` or set NERVES_HUB_TOKEN")
+	if err := requireToken(cfg); err != nil {
+		return nil, err
 	}
 	opts = append([]api.Option{api.WithUserAgent(userAgent())}, opts...)
 	return api.NewClient(cfg.URI, cfg.Token, opts...)

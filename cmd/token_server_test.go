@@ -204,3 +204,28 @@ func TestExplicitEmptyTokenFlagSkipsSavedToken(t *testing.T) {
 		t.Errorf("got token=%q err=%v", c.Token, c.TokenErr)
 	}
 }
+
+// The console and shell open a websocket rather than an API client, and give
+// the same error as API commands when the saved token is for another server.
+func TestTerminalSessionsNameTheSavedTokensServer(t *testing.T) {
+	for _, sub := range []string{"console", "shell"} {
+		t.Run(sub, func(t *testing.T) {
+			t.Setenv("NERVES_CLOUD_TOKEN", "")
+			t.Setenv("NERVES_HUB_TOKEN", "")
+			dir := t.TempDir()
+			if _, err := config.SaveToken(dir, "https://hub.corp", "nhu_corp"); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err := execCmd(t, "", "device", sub, "dev-001",
+				"--org", "acme", "--uri", "https://example.com", "--data-dir", dir)
+			var mismatch *config.TokenMismatchError
+			if !errors.As(err, &mismatch) {
+				t.Fatalf("want a token mismatch error, got %v", err)
+			}
+			if !strings.Contains(err.Error(), "saved token is for https://hub.corp") {
+				t.Errorf("error should name the token's server: %v", err)
+			}
+		})
+	}
+}

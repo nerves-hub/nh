@@ -116,8 +116,8 @@ func consoleTopic(identifier string) string {
 // device in status messages.
 func runDeviceTerminalSession(cmd *cobra.Command, topic, label string, proto terminalProtocol) error {
 	cfg := config.From(cmd.Context())
-	if cfg.Token == "" {
-		return errors.New("not authenticated: run `nh user auth` or set NERVES_HUB_TOKEN")
+	if err := requireToken(cfg); err != nil {
+		return err
 	}
 
 	in, out, ok := consoleTerminal(cmd)
