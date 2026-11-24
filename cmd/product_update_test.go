@@ -181,27 +181,34 @@ func TestProductUpdateRejectedBeforeAnyRequest(t *testing.T) {
 
 // The changeset error the server returns when the instance has not turned a
 // format on (Product.validate_allowed_update_tools/1) gains the setting that
-// does.
+// does. The server names the instance by its friendly platform name, NervesHub
+// unless the instance is branded, as NervesCloud is.
 func TestProductUpdateToolNotEnabledOnInstance(t *testing.T) {
-	srv, _ := newProductUpdateServer(t, productShowResponse, http.StatusUnprocessableEntity,
-		`{"errors":{"allowed_update_tools":["not enabled on this NervesHub instance: esp-idf, rauc"]}}`)
+	for _, instance := range []string{"NervesHub", "NervesCloud"} {
+		t.Run(instance, func(t *testing.T) {
+			refusal := "not enabled on " + instance + ": esp-idf, rauc"
+			srv, _ := newProductUpdateServer(t, productShowResponse, http.StatusUnprocessableEntity,
+				`{"errors":{"allowed_update_tools":["`+refusal+`"]}}`)
 
-	_, err := execProductUpdate(t, srv, "--tools", "esp-idf,rauc")
-	if err == nil {
-		t.Fatal("want an error")
-	}
-	for _, want := range []string{
-		"422",
-		"not enabled on this NervesHub instance: esp-idf, rauc",
-		"usually ESP_IDF_FIRMWARE_ENABLED=true",
-		"RAUC_FIRMWARE_ENABLED=true",
-	} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error missing %q:\n%v", want, err)
-		}
-	}
-	if strings.Contains(err.Error(), "ATOMVM") {
-		t.Errorf("error names a format that was not refused:\n%v", err)
+			_, err := execProductUpdate(t, srv, "--tools", "esp-idf,rauc")
+			if err == nil {
+				t.Fatal("want an error")
+			}
+			for _, want := range []string{
+				"422",
+				refusal,
+				"an administrator of " + instance + " must enable the format first",
+				"usually ESP_IDF_FIRMWARE_ENABLED=true",
+				"RAUC_FIRMWARE_ENABLED=true",
+			} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error missing %q:\n%v", want, err)
+				}
+			}
+			if strings.Contains(err.Error(), "ATOMVM") {
+				t.Errorf("error names a format that was not refused:\n%v", err)
+			}
+		})
 	}
 }
 

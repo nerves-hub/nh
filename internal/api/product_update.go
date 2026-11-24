@@ -177,14 +177,14 @@ func explainUpdateToolError(err error) error {
 		return err
 	}
 	for _, msg := range apiErr.FieldErrors["allowed_update_tools"] {
-		if _, list, ok := strings.Cut(msg, "not enabled on this NervesHub instance:"); ok {
+		if instance, list, ok := notEnabledTools(msg); ok {
 			var settings []string
 			for _, t := range strings.Split(list, ",") {
 				if env, ok := updateToolEnvVars[strings.TrimSpace(t)]; ok {
 					settings = append(settings, env+"=true")
 				}
 			}
-			hint := "a NervesHub administrator must enable the format on the instance first"
+			hint := "an administrator of " + instance + " must enable the format first"
 			if len(settings) > 0 {
 				// all/0 reads these unless the instance pins :update_tools in
 				// its config, so they are the usual fix rather than the only one.
@@ -197,4 +197,23 @@ func explainUpdateToolError(err error) error {
 		}
 	}
 	return err
+}
+
+// notEnabledTools splits the server's error for formats the instance has turned
+// off, "not enabled on <instance>: <tool>, <tool>", into the instance's name
+// and the tool list. The name is the instance's configured
+// NervesHub.Branding.friendly_platform_name/0, such as NervesHub or
+// NervesCloud, so it may contain anything, ": " included; the tool names never
+// do, so the list starts after the last ": ".
+func notEnabledTools(msg string) (instance, list string, ok bool) {
+	const prefix = "not enabled on "
+	rest, found := strings.CutPrefix(msg, prefix)
+	if !found {
+		return "", "", false
+	}
+	i := strings.LastIndex(rest, ": ")
+	if i < 0 {
+		return "", "", false
+	}
+	return rest[:i], rest[i+2:], true
 }
