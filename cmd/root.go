@@ -107,6 +107,12 @@ func Execute() {
 		Grace: interruptGrace,
 		Abandon: func(sig os.Signal) {
 			restoreTerminal()
+			// Exiting with a status rather than dying of the signal, nh gets
+			// no newline from the shell after the ^C, so a prompt it was
+			// showing would run into the shell's own.
+			if term.IsTerminal(int(os.Stderr.Fd())) {
+				_, _ = os.Stderr.WriteString("\n")
+			}
 			os.Exit(interrupt.ExitCode(sig))
 		},
 	}, func(ctx context.Context) error {

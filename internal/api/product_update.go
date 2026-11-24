@@ -184,7 +184,7 @@ func explainUpdateToolError(err error) error {
 					settings = append(settings, env+"=true")
 				}
 			}
-			hint := "an administrator of " + instance + " must enable the format first"
+			hint := "an administrator must enable the format on " + instance + " first"
 			if len(settings) > 0 {
 				// all/0 reads these unless the instance pins :update_tools in
 				// its config, so they are the usual fix rather than the only one.

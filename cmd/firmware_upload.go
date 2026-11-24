@@ -35,6 +35,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/nerves-hub/nh/internal/api"
 	"github.com/nerves-hub/nh/internal/config"
@@ -715,6 +716,10 @@ func decryptSigningKey(cmd *cobra.Command, cfg *config.Config, blob string) (ed2
 	return priv, err
 }
 
+// signWaitDelay bounds how long signing waits for fwup's output pipes to close
+// after fwup has been killed.
+const signWaitDelay = 500 * time.Millisecond
+
 // signFirmware signs the firmware at inPath with fwup, writing the signed
 // image to a temporary file whose path is returned. The caller is responsible
 // for removing it.
@@ -749,6 +754,9 @@ func signFirmware(ctx context.Context, inPath, privateKey string) (string, error
 	}
 
 	sign := exec.CommandContext(ctx, fwup, "--sign", "-i", inPath, "-o", outPath, "-s", keyFile.Name())
+	// Once Ctrl-C kills fwup, stop waiting on a pipe some child of it may
+	// hold open, so the key file is removed now.
+	sign.WaitDelay = signWaitDelay
 	var stderr bytes.Buffer
 	sign.Stderr = &stderr
 	if err := sign.Run(); err != nil {

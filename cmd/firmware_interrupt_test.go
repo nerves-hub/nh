@@ -130,11 +130,12 @@ func TestSignFirmwareCancelledRemovesTempFiles(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("TMPDIR", tmp)
 
-	// A fwup that records it has started, then hangs until killed. exec keeps
-	// it one process, so killing it closes its pipes.
+	// A fwup that records it has started, then hangs. The sleep is a child
+	// that keeps fwup's stderr pipe open after fwup is killed, so signing
+	// returns promptly only because of WaitDelay.
 	dir := t.TempDir()
 	started := filepath.Join(dir, "started")
-	script := "#!/bin/sh\ntouch '" + started + "'\nexec sleep 30\n"
+	script := "#!/bin/sh\ntouch '" + started + "'\nsleep 5\n"
 	stub := filepath.Join(dir, "fwup")
 	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
@@ -169,8 +170,8 @@ func TestSignFirmwareCancelledRemovesTempFiles(t *testing.T) {
 	if _, statErr := os.Stat(started); statErr != nil {
 		t.Fatalf("fwup never started: %v", statErr)
 	}
-	if d := time.Since(begin); d > 10*time.Second {
-		t.Errorf("cancelling took %s; fwup was not killed", d)
+	if d := time.Since(begin); d > 3*time.Second {
+		t.Errorf("cancelling took %s; signing waited on fwup's child", d)
 	}
 
 	left, _ := filepath.Glob(filepath.Join(tmp, "nh-*"))

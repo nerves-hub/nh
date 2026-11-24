@@ -197,7 +197,7 @@ func TestProductUpdateToolNotEnabledOnInstance(t *testing.T) {
 			for _, want := range []string{
 				"422",
 				refusal,
-				"an administrator of " + instance + " must enable the format first",
+				"an administrator must enable the format on " + instance + " first",
 				"usually ESP_IDF_FIRMWARE_ENABLED=true",
 				"RAUC_FIRMWARE_ENABLED=true",
 			} {

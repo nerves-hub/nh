@@ -102,6 +102,13 @@ func Run(parent context.Context, opts Options, work func(context.Context) error)
 		case <-sigc:
 		case <-grace.C:
 		}
+		// The work may have returned just as the timer fired or the second
+		// signal arrived, and select picks among ready cases at random.
+		select {
+		case <-done:
+			return
+		default:
+		}
 		removeRegistered()
 		if opts.Abandon != nil {
 			opts.Abandon(sig)
