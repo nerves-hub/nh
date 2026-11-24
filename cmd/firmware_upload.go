@@ -263,18 +263,24 @@ func runFirmwareUpload(cmd *cobra.Command, args []string) error {
 
 	// Point deployment groups at the new firmware. This runs after the upload
 	// has succeeded, so a failure here leaves the firmware in place and says so.
-	updated, err := deployFirmware(cmd, client, org, product, uploaded.UUID)
-	if err != nil {
-		return err
+	// In JSON mode the progress lines go to stderr, keeping stdout one JSON
+	// document, and that document is written even when a deployment fails, so
+	// a script still learns the UUID of the firmware that did upload.
+	progress := w
+	if cfg.Output == config.OutputJSON {
+		progress = cmd.ErrOrStderr()
 	}
+	updated, deployErr := deployFirmware(cmd, progress, client, org, product, uploaded.UUID)
 
 	if cfg.Output == config.OutputJSON {
-		return printJSON(w, struct {
+		if err := printJSON(w, struct {
 			*api.Firmware
 			Deployed []string `json:"deployed,omitempty"`
-		}{Firmware: uploaded, Deployed: updated})
+		}{Firmware: uploaded, Deployed: updated}); err != nil {
+			return errors.Join(deployErr, err)
+		}
 	}
-	return nil
+	return deployErr
 }
 
 // signForUpload signs the image as its format requires, returning the path of
@@ -575,9 +581,10 @@ func confirmFirmwareUpload(cmd *cobra.Command, cfg *config.Config, path, product
 }
 
 // deployFirmware points each requested deployment group at uuid, returning the
-// groups updated. DeployFirmware creates each release with
-// POST .../releases where the server has it, and the release PUT otherwise.
-func deployFirmware(cmd *cobra.Command, client *api.Client, org, product, uuid string) ([]string, error) {
+// groups updated, and reports each one on w. DeployFirmware creates each
+// release with POST .../releases where the server has it, and the release PUT
+// otherwise.
+func deployFirmware(cmd *cobra.Command, w io.Writer, client *api.Client, org, product, uuid string) ([]string, error) {
 	names := deployTargets(cmd)
 	if len(names) == 0 {
 		return nil, nil
@@ -586,7 +593,6 @@ func deployFirmware(cmd *cobra.Command, client *api.Client, org, product, uuid s
 		return nil, errors.New("firmware uploaded, but the server returned no UUID to deploy")
 	}
 
-	w := cmd.OutOrStdout()
 	updated := make([]string, 0, len(names))
 	for _, name := range names {
 		if err := client.DeployFirmware(cmd.Context(), org, product, name, uuid); err != nil {

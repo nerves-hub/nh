@@ -342,3 +342,79 @@ func TestFirmwareUploadDeployFailureSaysUploadSucceeded(t *testing.T) {
 		}
 	}
 }
+
+// With -o json, stdout is one JSON document: the deployment progress lines go
+// to stderr.
+func TestFirmwareUploadDeployJSONKeepsStdoutClean(t *testing.T) {
+	stubFwupMeta(t, map[string]string{"product": "thermostat", "version": "1.4.0"})
+	srv, _ := publishServer(t)
+
+	stdout, stderr, err := execCmdSplit(t, "",
+		"firmware", "upload", writeFW(t),
+		"--skip-signing", "--deploy", "canary", "--deploy", "production",
+		"--org", "acme", "--product", "thermostat",
+		"--uri", srv.URL, "--token", "tok", "-o", "json",
+	)
+	if err != nil {
+		t.Fatalf("upload --deploy -o json: %v\n%s", err, stderr)
+	}
+
+	var got struct {
+		UUID     string   `json:"uuid"`
+		Deployed []string `json:"deployed"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("stdout is not a JSON document: %v\n%s", err, stdout)
+	}
+	if got.UUID != "new-uuid" || strings.Join(got.Deployed, ",") != "canary,production" {
+		t.Errorf("JSON = %+v, want uuid new-uuid deployed [canary production]", got)
+	}
+	if !strings.Contains(stderr, "Updated deployment group canary") {
+		t.Errorf("progress should go to stderr, got:\n%s", stderr)
+	}
+}
+
+// When a deployment fails after the upload, -o json still reports the
+// uploaded firmware, with the groups that were updated, before the error.
+func TestFirmwareUploadDeployFailureStillPrintsJSON(t *testing.T) {
+	stubFwupMeta(t, map[string]string{"product": "thermostat", "version": "1.4.0"})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/firmwares"):
+			_, _ = w.Write([]byte(`{"data":{"uuid":"new-uuid","version":"1.4.0"}}`))
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/deployments/canary/releases"):
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"data":{"number":2,"firmware":{"uuid":"new-uuid"}}}`))
+		default:
+			// The group "nope" doesn't exist.
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"errors":{"detail":"Not Found"}}`))
+		}
+	}))
+	defer srv.Close()
+
+	stdout, _, err := execCmdSplit(t, "",
+		"firmware", "upload", writeFW(t),
+		"--skip-signing", "--deploy", "canary", "--deploy", "nope",
+		"--org", "acme", "--product", "thermostat",
+		"--uri", srv.URL, "--token", "tok", "-o", "json",
+	)
+	if err == nil || !strings.Contains(err.Error(), `deployment group "nope"`) {
+		t.Fatalf("expected the deployment error, got %v", err)
+	}
+
+	var got struct {
+		UUID     string   `json:"uuid"`
+		Deployed []string `json:"deployed"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("stdout is not a JSON document: %v\n%s", err, stdout)
+	}
+	if got.UUID != "new-uuid" {
+		t.Errorf("uuid = %q, want new-uuid", got.UUID)
+	}
+	if len(got.Deployed) != 1 || got.Deployed[0] != "canary" {
+		t.Errorf("deployed = %v, want [canary]", got.Deployed)
+	}
+}
