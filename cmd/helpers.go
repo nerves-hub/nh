@@ -25,6 +25,7 @@ package cmd
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"text/tabwriter"
 
@@ -93,10 +94,26 @@ func userAgent() string {
 // than with a 401. Extra options (e.g. a custom HTTP client) may be supplied.
 func newAuthedClient(cfg *config.Config, opts ...api.Option) (*api.Client, error) {
 	if cfg.Token == "" {
+		if cfg.TokenErr != nil {
+			return nil, cfg.TokenErr
+		}
 		return nil, errors.New("not authenticated: run `nh user auth` or set NERVES_HUB_TOKEN")
 	}
 	opts = append([]api.Option{api.WithUserAgent(userAgent())}, opts...)
 	return api.NewClient(cfg.URI, cfg.Token, opts...)
+}
+
+// warnTokenServer warns, after the uri setting changes, when the saved token
+// belongs to a different server than the new default, since commands will then
+// refuse to use it.
+func warnTokenServer(cmd *cobra.Command, settings *config.Settings) {
+	owner := settings.TokenOwner()
+	if owner == "" || config.SameURI(owner, settings.EffectiveURI()) {
+		return
+	}
+	fmt.Fprintf(cmd.ErrOrStderr(), "Note: the saved token is for %s, so it won't be sent to %s. "+
+		"Run `nh user login` to sign in there, or pass --uri %s to keep using the token.\n",
+		owner, settings.EffectiveURI(), owner)
 }
 
 // resolveOrg returns the organization scope: the value set via flag,

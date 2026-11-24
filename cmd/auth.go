@@ -47,7 +47,11 @@ var authCmd = &cobra.Command{
 You are prompted for your email (unless --email is given) and password; the
 password is read without echoing. On success the returned API token is saved
 to the settings file in the data directory (default ~/.nh/settings.json) with
-0600 permissions, and is used automatically by subsequent commands.`,
+0600 permissions, and is used automatically by subsequent commands.
+
+The token is saved together with the server it's for (--uri), and that server
+becomes the default for later commands. nh only sends the saved token to that
+server: with a different --uri, commands fail rather than send it elsewhere.`,
 	Args: cobra.NoArgs,
 	RunE: runAuth,
 }
@@ -103,7 +107,8 @@ func runAuth(cmd *cobra.Command, _ []string) error {
 		return errors.New("authentication succeeded but no token was returned")
 	}
 
-	if err := config.SaveToken(cfg.DataDir, result.Token); err != nil {
+	uriChanged, err := config.SaveToken(cfg.DataDir, cfg.URI, result.Token)
+	if err != nil {
 		return err
 	}
 
@@ -111,7 +116,8 @@ func runAuth(cmd *cobra.Command, _ []string) error {
 	if result.User.Name != "" {
 		who = result.User.Name
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "\nSuccessfully authenticated as %s\nToken saved to %s\n", who, config.SettingsFilePath(cfg.DataDir))
+	fmt.Fprintf(cmd.OutOrStdout(), "\nSuccessfully authenticated as %s\n", who)
+	printTokenSaved(cmd.OutOrStdout(), cfg, uriChanged)
 	return nil
 }
 

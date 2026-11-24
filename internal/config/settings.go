@@ -53,21 +53,25 @@ type Settings struct {
 	Product string `json:"product,omitempty"`
 	// Token is the API token saved by `nh user auth`. It is stored here rather
 	// than exposed through `nh config`.
-	Token    string             `json:"token,omitempty"`
+	Token string `json:"token,omitempty"`
+	// TokenURI is the server Token was issued by. nh only sends the saved
+	// token to that server (see TokenFor).
+	TokenURI string             `json:"token_uri,omitempty"`
 	Profiles map[string]Profile `json:"profiles,omitempty"`
 }
 
 // Profile is a named snapshot of the active configuration.
 type Profile struct {
-	URI     string `json:"uri,omitempty"`
-	Org     string `json:"org,omitempty"`
-	Product string `json:"product,omitempty"`
-	Token   string `json:"token,omitempty"`
+	URI      string `json:"uri,omitempty"`
+	Org      string `json:"org,omitempty"`
+	Product  string `json:"product,omitempty"`
+	Token    string `json:"token,omitempty"`
+	TokenURI string `json:"token_uri,omitempty"`
 }
 
 // activeProfile captures the current active configuration.
 func (s *Settings) activeProfile() Profile {
-	return Profile{URI: s.URI, Org: s.Org, Product: s.Product, Token: s.Token}
+	return Profile{URI: s.URI, Org: s.Org, Product: s.Product, Token: s.Token, TokenURI: s.TokenURI}
 }
 
 // SaveProfile stores the current active configuration under name, replacing any
@@ -86,7 +90,7 @@ func (s *Settings) LoadProfile(name string) error {
 	if !ok {
 		return fmt.Errorf("no profile named %q", name)
 	}
-	s.URI, s.Org, s.Product, s.Token = p.URI, p.Org, p.Product, p.Token
+	s.URI, s.Org, s.Product, s.Token, s.TokenURI = p.URI, p.Org, p.Product, p.Token, p.TokenURI
 	return nil
 }
 
@@ -119,6 +123,7 @@ func LoadSettings(dataDir string) (*Settings, error) {
 	if err := json.Unmarshal(b, &s); err != nil {
 		return nil, fmt.Errorf("config: parsing settings file %s: %w", SettingsFilePath(dataDir), err)
 	}
+	s.pinTokenURIs()
 	return &s, nil
 }
 

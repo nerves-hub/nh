@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/nerves-hub/nh/internal/config"
 )
 
 // writeLegacyDir builds a fake old nerves_hub_cli directory: an ETF config and
@@ -159,4 +161,60 @@ func TestMigrateRespectsExistingSettings(t *testing.T) {
 	if !strings.Contains(string(b), "keepme") {
 		t.Fatalf("existing org was overwritten:\n%s", b)
 	}
+}
+
+func TestMigrateImportsTokenWithItsServer(t *testing.T) {
+	from := writeLegacyDir(t)
+	data := t.TempDir()
+	if _, err := execCmd(t, "", "migrate", "--from", from, "--data-dir", data); err != nil {
+		t.Fatal(err)
+	}
+	s, err := config.LoadSettings(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.URI != "https://legacy.test" || s.Token != "nhu_legacy" || s.TokenURI != "https://legacy.test" {
+		t.Errorf("got uri=%q token=%q token_uri=%q", s.URI, s.Token, s.TokenURI)
+	}
+}
+
+// With a different uri already set, importing only the token would pair it
+// with the wrong server, so it is skipped too.
+func TestMigrateKeepsURIAndTokenTogether(t *testing.T) {
+	from := writeLegacyDir(t)
+
+	t.Run("existing uri", func(t *testing.T) {
+		data := t.TempDir()
+		mustExec(t, "config", "set", "uri", "https://mine.example.com", "--data-dir", data)
+		out := mustExec(t, "migrate", "--from", from, "--data-dir", data)
+		if !strings.Contains(out, "token    skip (the old CLI's token is for https://legacy.test, but nh's uri is https://mine.example.com") {
+			t.Errorf("token should be skipped with a reason:\n%s", out)
+		}
+		s, _ := config.LoadSettings(data)
+		if s.Token != "" || s.URI != "https://mine.example.com" {
+			t.Errorf("got uri=%q token=%q", s.URI, s.Token)
+		}
+
+		// --force imports both.
+		mustExec(t, "migrate", "--from", from, "--data-dir", data, "--force")
+		s, _ = config.LoadSettings(data)
+		if s.URI != "https://legacy.test" || s.Token != "nhu_legacy" || s.TokenURI != "https://legacy.test" {
+			t.Errorf("--force: got uri=%q token=%q token_uri=%q", s.URI, s.Token, s.TokenURI)
+		}
+	})
+
+	t.Run("existing token", func(t *testing.T) {
+		data := t.TempDir()
+		if _, err := config.SaveToken(data, config.DefaultURI, "nhu_mine"); err != nil {
+			t.Fatal(err)
+		}
+		out := mustExec(t, "migrate", "--from", from, "--data-dir", data)
+		if !strings.Contains(out, "uri      skip (the saved token is for "+config.DefaultURI) {
+			t.Errorf("uri should be skipped with a reason:\n%s", out)
+		}
+		s, _ := config.LoadSettings(data)
+		if s.URI != "" || s.Token != "nhu_mine" {
+			t.Errorf("got uri=%q token=%q", s.URI, s.Token)
+		}
+	})
 }
