@@ -26,6 +26,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -86,6 +87,10 @@ var userLoginCmd = &cobra.Command{
 nh starts a login and shows a URL and an eight-digit code. Open the URL, sign
 in to NervesHub, and enter the code there. nh waits for you to confirm, then
 saves your API token to the settings file (default ~/.nh/settings.json).
+
+The token is saved together with the server it's for (--uri), and that server
+becomes the default for later commands. nh only sends the saved token to that
+server.
 
 When stdout is a terminal, nh opens the URL in your browser for you; pass
 --no-browser to stop it. It never does with --non-interactive, or when there
@@ -179,7 +184,8 @@ func runUserLogin(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
-	if err := config.SaveToken(cfg.DataDir, userToken); err != nil {
+	uriChanged, err := config.SaveToken(cfg.DataDir, cfg.URI, userToken)
+	if err != nil {
 		return err
 	}
 
@@ -188,8 +194,17 @@ func runUserLogin(cmd *cobra.Command, _ []string) error {
 	} else {
 		fmt.Fprintln(w, "\nSuccessfully authenticated")
 	}
-	fmt.Fprintf(w, "Token saved to %s\n", config.SettingsFilePath(cfg.DataDir))
+	printTokenSaved(w, cfg, uriChanged)
 	return nil
+}
+
+// printTokenSaved reports where a new token was saved and, when signing in
+// changed it, the new default server.
+func printTokenSaved(w io.Writer, cfg *config.Config, uriChanged bool) {
+	fmt.Fprintf(w, "Token for %s saved to %s\n", cfg.URI, config.SettingsFilePath(cfg.DataDir))
+	if uriChanged {
+		fmt.Fprintf(w, "Default server set to %s\n", cfg.URI)
+	}
 }
 
 // describeUser names a user for a sign-in message: "Name <email>", or

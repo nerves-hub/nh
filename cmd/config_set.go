@@ -60,6 +60,9 @@ func runConfigSet(cmd *cobra.Command, args []string) error {
 	if err := config.SaveSettings(cfg.DataDir, settings); err != nil {
 		return err
 	}
+	if key == "uri" {
+		warnTokenServer(cmd, settings)
+	}
 
 	fmt.Fprintf(cmd.OutOrStdout(), "Set %s to %q\n", key, value)
 	return nil

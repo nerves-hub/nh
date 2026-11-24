@@ -23,7 +23,6 @@ THE SOFTWARE.
 package cmd
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -62,11 +61,41 @@ func promptLine(cmd *cobra.Command, prompt string, quiet bool) (string, error) {
 	if !quiet {
 		fmt.Fprint(cmd.ErrOrStderr(), prompt)
 	}
-	line, err := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
+	line, err := readLine(cmd.InOrStdin())
 	if err != nil && !errors.Is(err, io.EOF) {
 		return "", err
 	}
 	return strings.TrimRight(line, "\r\n"), nil
+}
+
+// readLine reads from r up to and including the next newline, one byte at a
+// time. It deliberately doesn't buffer: a buffered reader would swallow the
+// lines after this one, so with piped input (e.g. an email then a password)
+// the next prompt would find stdin already drained. At EOF it returns what it
+// read along with io.EOF. Like bufio, it gives up with io.ErrNoProgress after
+// many reads in a row that return no data and no error.
+func readLine(r io.Reader) (string, error) {
+	const maxEmptyReads = 100
+	var b strings.Builder
+	buf := make([]byte, 1)
+	for empty := 0; ; {
+		n, err := r.Read(buf)
+		if n > 0 {
+			empty = 0
+			b.WriteByte(buf[0])
+			if buf[0] == '\n' {
+				return b.String(), nil
+			}
+		}
+		if err != nil {
+			return b.String(), err
+		}
+		if n == 0 {
+			if empty++; empty >= maxEmptyReads {
+				return b.String(), io.ErrNoProgress
+			}
+		}
+	}
 }
 
 // promptPassword reads a password from stdin. When stdin is a terminal the

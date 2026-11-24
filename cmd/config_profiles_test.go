@@ -13,7 +13,7 @@ func TestConfigSaveAndLoadProfiles(t *testing.T) {
 	// Set up a "work" config and save it as a profile.
 	mustExec(t, "config", "set", "org", "acme", "--data-dir", dir)
 	mustExec(t, "config", "set", "product", "thermostat", "--data-dir", dir)
-	if err := config.SaveToken(dir, "tok-work"); err != nil {
+	if _, err := config.SaveToken(dir, "https://work.example.com", "tok-work"); err != nil {
 		t.Fatal(err)
 	}
 	if out := mustExec(t, "config", "save", "work", "--data-dir", dir); !strings.Contains(out, `profile "work"`) {
@@ -23,7 +23,7 @@ func TestConfigSaveAndLoadProfiles(t *testing.T) {
 	// Switch to a different "home" config and save it too.
 	mustExec(t, "config", "set", "org", "globex", "--data-dir", dir)
 	mustExec(t, "config", "set", "product", "doorbell", "--data-dir", dir)
-	if err := config.SaveToken(dir, "tok-home"); err != nil {
+	if _, err := config.SaveToken(dir, "https://home.example.com", "tok-home"); err != nil {
 		t.Fatal(err)
 	}
 	mustExec(t, "config", "save", "home", "--data-dir", dir)

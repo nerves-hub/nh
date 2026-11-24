@@ -11,7 +11,7 @@ import (
 func TestLogoutRemovesToken(t *testing.T) {
 	resetState(t)
 	dir := t.TempDir()
-	if err := config.SaveToken(dir, "nhu_secret"); err != nil {
+	if _, err := config.SaveToken(dir, config.DefaultURI, "nhu_secret"); err != nil {
 		t.Fatal(err)
 	}
 

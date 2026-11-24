@@ -64,6 +64,10 @@ type Config struct {
 	URI string
 	// Token is the personal access token used to authenticate API requests.
 	Token string
+	// TokenErr explains why Token is empty although a token is saved: the
+	// saved token belongs to a different server than URI (see
+	// Settings.TokenFor). Commands that need a token should return it.
+	TokenErr error
 	// Org is the default organization scope for commands that accept one.
 	Org string
 	// Product is the default product scope for commands that accept one.

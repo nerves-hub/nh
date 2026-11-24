@@ -41,8 +41,10 @@ var migrateCmd = &cobra.Command{
 
 nh reads the old CLI's data directory (default ~/.nerves-hub, or
 $NERVES_HUB_HOME) and copies your saved defaults, API token, and signing keys
-into nh's own data directory. Signing keys are re-encoded, not decrypted, so no
-key password is required and password-protected keys keep their password.
+into nh's own data directory. The uri and token are imported together, so the
+token is only used with the server it came from. Signing keys are re-encoded,
+not decrypted, so no key password is required and password-protected keys keep
+their password.
 
 The old directory is only read, never modified. Existing nh settings and keys
 are left untouched unless you pass --force, so it is safe to run more than
@@ -134,6 +136,10 @@ func runMigrate(cmd *cobra.Command, _ []string) error {
 }
 
 // planSettings decides, per field, whether the legacy value would be imported.
+//
+// The uri and token are kept together: a token is only used with the server
+// it came from, so a plan that would leave the saved token for one server and
+// the default uri pointing at another skips the field that would split them.
 func planSettings(l legacy.Config, cur *config.Settings, force bool) []settingChange {
 	fields := []struct {
 		name     string
@@ -147,6 +153,7 @@ func planSettings(l legacy.Config, cur *config.Settings, force bool) []settingCh
 		{"token", l.Token, cur.Token, true},
 	}
 	var changes []settingChange
+	uriIdx, tokenIdx := -1, -1
 	for _, f := range fields {
 		if f.newVal == "" {
 			continue // nothing in the old config for this field
@@ -159,9 +166,65 @@ func planSettings(l legacy.Config, cur *config.Settings, force bool) []settingCh
 		if f.redacted && c.Action == "import" {
 			c.Reason = "imported (value hidden)"
 		}
+		switch f.name {
+		case "uri":
+			uriIdx = len(changes)
+		case "token":
+			tokenIdx = len(changes)
+		}
 		changes = append(changes, c)
 	}
+	var uriChange, tokenChange *settingChange
+	if uriIdx >= 0 {
+		uriChange = &changes[uriIdx]
+	}
+	if tokenIdx >= 0 {
+		tokenChange = &changes[tokenIdx]
+	}
+	keepServerPair(l, cur, uriChange, tokenChange)
 	return changes
+}
+
+// keepServerPair skips the uri or token import when doing just one of them
+// would leave the saved token for a different server than the default uri.
+// Either change may be nil when the old config has no value for it.
+func keepServerPair(l legacy.Config, cur *config.Settings, uriChange, tokenChange *settingChange) {
+	uriImported := uriChange != nil && uriChange.Action == "import"
+	tokenImported := tokenChange != nil && tokenChange.Action == "import"
+
+	after := *cur
+	if uriImported {
+		after.URI = l.URI
+	}
+	if tokenImported {
+		after.Token, after.TokenURI = l.Token, legacyTokenURI(l)
+	}
+	owner := after.TokenOwner()
+	if owner == "" || config.SameURI(owner, after.EffectiveURI()) {
+		return
+	}
+
+	switch {
+	case tokenImported:
+		tokenChange.Action = "skip"
+		fix := "use --force to import uri and token together"
+		if l.URI == "" {
+			fix = "run `nh config unset uri` first"
+		}
+		tokenChange.Reason = fmt.Sprintf("the old CLI's token is for %s, but nh's uri is %s (%s)", owner, after.EffectiveURI(), fix)
+	case uriImported:
+		uriChange.Action = "skip"
+		uriChange.Reason = fmt.Sprintf("the saved token is for %s (use --force to import uri and token together)", owner)
+	}
+}
+
+// legacyTokenURI is the server the old CLI's token was issued by: its saved
+// uri, or the default server when it had none.
+func legacyTokenURI(l legacy.Config) string {
+	if l.URI != "" {
+		return l.URI
+	}
+	return config.DefaultURI
 }
 
 // planKeys decides, per key, whether it would be imported into dataDir.
@@ -201,7 +264,7 @@ func applyMigration(dataDir string, l legacy.Config, cur *config.Settings, keys 
 		case "product":
 			cur.Product = l.Product
 		case "token":
-			cur.Token = l.Token
+			cur.Token, cur.TokenURI = l.Token, legacyTokenURI(l)
 		}
 		settingsChanged = true
 	}

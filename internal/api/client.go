@@ -359,8 +359,14 @@ func (c *Client) resolve(path string, query url.Values) (string, error) {
 		return "", fmt.Errorf("api: invalid request path %q: %w", path, err)
 	}
 
+	// Join the escaped forms so an escaped "/" inside a segment (e.g. an
+	// identifier passed through url.PathEscape) stays %2F rather than becoming
+	// a path separator. RawPath carries the escaped form; Path the decoded one.
 	full := *c.baseURL
-	full.Path = joinPath(c.baseURL.Path, ref.Path)
+	full.RawPath = joinPath(c.baseURL.EscapedPath(), ref.EscapedPath())
+	if full.Path, err = url.PathUnescape(full.RawPath); err != nil {
+		return "", fmt.Errorf("api: invalid request path %q: %w", path, err)
+	}
 
 	// Merge any query encoded in path with the explicit query argument.
 	q := full.Query()
@@ -381,6 +387,7 @@ func (c *Client) resolve(path string, query url.Values) (string, error) {
 
 // joinPath joins the base path and request path, inserting the API prefix when
 // the result does not already include it, and collapsing duplicate slashes.
+// Both paths are in escaped form, so a segment holding %2F stays one segment.
 func joinPath(base, path string) string {
 	segments := append(splitPath(base), splitPath(apiPrefix)...)
 	segments = append(segments, splitPath(path)...)

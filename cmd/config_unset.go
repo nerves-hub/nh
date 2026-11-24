@@ -58,6 +58,9 @@ func runConfigUnset(cmd *cobra.Command, args []string) error {
 	if err := config.SaveSettings(cfg.DataDir, settings); err != nil {
 		return err
 	}
+	if key == "uri" {
+		warnTokenServer(cmd, settings)
+	}
 
 	fmt.Fprintf(cmd.OutOrStdout(), "Unset %s\n", key)
 	return nil

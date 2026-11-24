@@ -88,6 +88,9 @@ If you are using a self-hosted NervesHub installation, you will need to tell `nh
 nh config set uri https://my.nerves-hub.installation
 ```
 
+(Signing in with `nh user login --uri https://my.nerves-hub.installation` does
+the same: the server you sign in to becomes the default.)
+
 Check that `nh` can reach it with `nh status`, which needs no sign-in. It prints
 the configured URI and whether the server answered its health check, and exits
 non-zero when the server is unreachable or reports a problem.
@@ -423,6 +426,22 @@ Like org and product, a saved `uri` is the lowest-precedence source: the `--uri`
 flag and the `NERVES_HUB_URI` environment variable still override it for an
 individual command.
 
+### Saved token and its server
+
+`nh user login` and `nh user auth` save the token together with the server it
+came from, and make that server the default. `nh` only sends the saved token to
+that server. If a command would talk to a different one (through `--uri`,
+`NERVES_HUB_URI`, or a later `nh config set uri`), it fails instead, naming the
+server the token is for, so you can pass `--uri` for that server or sign in to
+the new one with `nh user login --uri <server>`.
+
+A token given with `--token` or `NERVES_HUB_TOKEN` is always used as is, with
+whatever server is configured.
+
+Settings files saved by older versions of `nh` don't record the token's server;
+the token is taken to belong to the saved `uri`, or to
+`https://manage.nervescloud.com` when none is set.
+
 You can also keep multiple named configuration profiles and switch between them:
 
 ```sh
@@ -472,6 +491,9 @@ Notes:
   password-protected keys keep their password.
 - It is **non-destructive and repeatable**: existing `nh` settings and keys are
   left alone unless you pass `--force`.
+- The URI and token are **imported together**: when existing `nh` settings would
+  leave the imported token paired with a different server (or the existing
+  token with the imported URI), that field is skipped unless you pass `--force`.
 - Point it elsewhere with `--from <dir>`.
 
 After migrating, run `nh user whoami` to confirm your token still works; if it

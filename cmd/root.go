@@ -51,24 +51,29 @@ authenticate.`,
 		// `user auth` and the defaults set by `config set` — can serve as the
 		// lowest-precedence sources (flag > env > saved file).
 		dataDir := flagValue(cmd, "data-dir", config.DefaultDataDir())
-		savedToken, err := config.LoadToken(dataDir)
-		if err != nil {
-			return err
-		}
 		settings, err := config.LoadSettings(dataDir)
 		if err != nil {
 			return err
 		}
 
 		// The built-in default URI applies only when settings don't override it.
-		defaultURI := config.DefaultURI
-		if settings.URI != "" {
-			defaultURI = settings.URI
+		uri := flagValue(cmd, "uri", settings.EffectiveURI())
+
+		// A token given by flag or environment is used as is: the user chose
+		// to pair it with this URI. The saved token is only used with the
+		// server that issued it, so it never leaks to another host.
+		var token string
+		var tokenErr error
+		if cmd.Flags().Changed("token") || config.Env("TOKEN") != "" {
+			token = flagValue(cmd, "token", "")
+		} else {
+			token, tokenErr = settings.TokenFor(uri)
 		}
 
 		cfg := &config.Config{
-			URI:            flagValue(cmd, "uri", defaultURI),
-			Token:          flagValue(cmd, "token", savedToken),
+			URI:            uri,
+			Token:          token,
+			TokenErr:       tokenErr,
 			Org:            flagValue(cmd, "org", settings.Org),
 			Product:        flagValue(cmd, "product", settings.Product),
 			DataDir:        dataDir,

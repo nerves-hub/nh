@@ -69,6 +69,7 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 		// exposes the saved token or other profiles' credentials.
 		public := *settings
 		public.Token = ""
+		public.TokenURI = ""
 		public.Profiles = nil
 		return printJSON(w, public)
 	}
