@@ -52,7 +52,7 @@ and tags.
 Use --filter key:value to narrow the results; repeat it for multiple filters,
 e.g. --filter connection:not_seen --filter tags:prod. The keys are:
 
-  connection          connected, disconnected, not_seen, offline,
+  connection          connected, disconnected, not_seen, offline, asleep,
                       not_seen_in_seven_days, not_seen_in_fourteen_days
   connection_type     cellular, ethernet, wifi, unknown
   health_status       healthy, warning, unhealthy, unknown
@@ -77,9 +77,11 @@ e.g. --filter connection:not_seen --filter tags:prod. The keys are:
                       the operator is gt (default) or lt
   advanced_query      the same as --query
 
-The keys from connection down to alarm take several comma-separated values
-and match any of them. nh rejects keys and values the server would ignore,
-since it would otherwise list every device as if they all matched.
+connection:asleep matches devices that said they were going to sleep when
+they last disconnected, including ones now overdue. The keys from connection
+down to alarm take several comma-separated values and match any of them. nh
+rejects keys and values the server would ignore, since it would otherwise
+list every device as if they all matched.
 
 Use --query for the advanced query language from the web UI's search bar.
 Values are quoted strings, except metric:<key> values, which are bare
@@ -97,6 +99,9 @@ Each column takes its own operators:
   >, <                    last_seen (e.g. "7 days ago")
   >, >=, <, <=            metric:<key>, the device's latest reading of a
                           custom health metric
+
+connection is "connected", "disconnected", "not_seen" or "asleep", so
+connection = "asleep" finds sleeping devices.
 
 Input that doesn't look like a query expression is treated as a free-text
 search across the device's textual fields; a query expression with a typo

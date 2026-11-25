@@ -92,6 +92,9 @@ func renderDevice(w io.Writer, device *api.Device) error {
 	if device.Online != "" && device.Online != device.ConnectionStatus {
 		row("Online:", device.Online)
 	}
+	if device.Sleep != nil {
+		row("Sleep:", sleepText(device.Sleep))
+	}
 	row("Version:", orDash(device.Version))
 	if len(device.Tags) > 0 {
 		row("Tags:", strings.Join(device.Tags, ", "))
@@ -138,6 +141,38 @@ func connectionStatusText(status string) string {
 		return "never connected"
 	}
 	return orDash(status)
+}
+
+// sleepText says what a device's sleep state means, e.g. "deep, back at
+// <time>" or "light, overdue: was due back <time>".
+func sleepText(sleep *api.DeviceSleep) string {
+	wake := sleep.ExpectedWakeAt
+	hasWake := wake != nil && !wake.IsZero()
+	var text string
+	switch sleep.State {
+	case "going_to_sleep":
+		text = "going to sleep"
+		if hasWake {
+			text += ", back at " + formatTimestamp(wake)
+		}
+	case "asleep":
+		if hasWake {
+			text = "back at " + formatTimestamp(wake)
+		} else {
+			text = "asleep, no wake time given"
+		}
+	case "overdue":
+		text = "overdue"
+		if hasWake {
+			text += ": was due back " + formatTimestamp(wake)
+		}
+	default:
+		text = orDash(sleep.State)
+	}
+	if sleep.Mode != "" {
+		text = sleep.Mode + ", " + text
+	}
+	return text
 }
 
 // orDash returns s, or "-" when s is empty.

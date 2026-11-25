@@ -56,8 +56,10 @@ var deviceFilters = map[string]deviceFilter{
 	"advanced_query": {},
 	"alarm":          {multi: true},
 	"alarm_status":   {multi: true, values: []string{"with", "without"}},
+	// "asleep" matches a device whose last connection ended with it saying
+	// it was going to sleep, overdue or not.
 	"connection": {multi: true, values: []string{
-		"connected", "disconnected", "not_seen", "offline",
+		"connected", "disconnected", "not_seen", "offline", "asleep",
 		"not_seen_in_seven_days", "not_seen_in_fourteen_days",
 	}},
 	"connection_type": {multi: true, values: []string{"cellular", "ethernet", "wifi", "unknown"}},
