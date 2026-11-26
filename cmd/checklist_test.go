@@ -5,6 +5,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
 
 // checklistResponse is what ProductJSON.utilization/1 renders, cut down to a
@@ -79,7 +81,7 @@ Device authentication
   !  Device authentication  2 of 12 devices connect with a secret shared by the whole product.
       https://docs.nerves-hub.org/auth/device-certificates
 
-Recommended (1/3)
+Recommended (1/2)
   ✓  Signed firmware        3 signed firmwares uploaded.
   ○  Delta updates          Delta updates are off for every deployment group that is turned on.
       https://docs.nerves-hub.org/management/delta-updates
@@ -170,6 +172,43 @@ func TestChecklistColorNever(t *testing.T) {
 	}
 	if strings.Contains(out, "\x1b[") {
 		t.Errorf("--color never wrote colour codes:\n%q", out)
+	}
+}
+
+// checklistOnTerminal makes stdout look like a terminal, or not.
+func checklistOnTerminal(t *testing.T, terminal bool) {
+	t.Helper()
+	old := stdoutIsTerminal
+	stdoutIsTerminal = func(*cobra.Command) bool { return terminal }
+	t.Cleanup(func() { stdoutIsTerminal = old })
+}
+
+func TestChecklistColorAuto(t *testing.T) {
+	for name, tc := range map[string]struct {
+		terminal bool
+		noColor  string
+		want     bool
+	}{
+		"a terminal is coloured":        {terminal: true, want: true},
+		"a pipe is not":                 {terminal: false, want: false},
+		"NO_COLOR turns a terminal off": {terminal: true, noColor: "1", want: false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := checklistServer(t, nil)
+			checklistOnTerminal(t, tc.terminal)
+			t.Setenv("NO_COLOR", tc.noColor)
+
+			out, err := execCmd(t, "",
+				"checklist", "thermostat",
+				"--org", "acme", "--uri", srv.URL, "--token", "tok",
+			)
+			if err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			if got := strings.Contains(out, "\x1b["); got != tc.want {
+				t.Errorf("colour codes written: %v, want %v:\n%q", got, tc.want, out)
+			}
+		})
 	}
 }
 

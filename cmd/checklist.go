@@ -31,7 +31,6 @@ import (
 	"github.com/nerves-hub/nh/internal/api"
 	"github.com/nerves-hub/nh/internal/config"
 	"github.com/spf13/cobra"
-	"golang.org/x/term"
 )
 
 // checklistCmd implements `nh checklist [product]`.
@@ -42,10 +41,11 @@ var checklistCmd = &cobra.Command{
 report as the Utilization tab of the product's settings.
 
 It opens with the score, the recommended features in use out of those the
-server offers, and how the product's devices authenticate: a shared secret is
-marked as one to move away from, and certificates (LocalCert, NervesKey) as
-where to be. Then each recommended feature, and after those the optional ones,
-which are situational and don't count towards the score.
+server offers, and how the product's devices authenticate: a secret shared by
+the whole product is marked as one to move away from, and certificates
+(LocalCert, NervesKey) or per-device secrets as where to be. Then each
+recommended feature, and after those the optional ones, which are situational
+and don't count towards the score.
 
   ✓  in use
   !  set up, but risky or not showing up yet (a warning)
@@ -87,7 +87,7 @@ func runChecklist(cmd *cobra.Command, args []string) error {
 
 	w := cmd.OutOrStdout()
 	colorMode, _ := cmd.Flags().GetString("color")
-	color, err := useColor(colorMode, w)
+	color, err := useColor(colorMode, cmd)
 	if err != nil {
 		return err
 	}
@@ -112,7 +112,7 @@ func runChecklist(cmd *cobra.Command, args []string) error {
 
 // useColor resolves --color. "auto" colours only a terminal, and never when
 // NO_COLOR is set (https://no-color.org).
-func useColor(mode string, w io.Writer) (bool, error) {
+func useColor(mode string, cmd *cobra.Command) (bool, error) {
 	switch mode {
 	case "always":
 		return true, nil
@@ -122,8 +122,7 @@ func useColor(mode string, w io.Writer) (bool, error) {
 		if os.Getenv("NO_COLOR") != "" {
 			return false, nil
 		}
-		f, ok := w.(*os.File)
-		return ok && term.IsTerminal(int(f.Fd())), nil
+		return stdoutIsTerminal(cmd), nil
 	default:
 		return false, fmt.Errorf("invalid --color %q: use auto, always or never", mode)
 	}
@@ -186,7 +185,7 @@ func printChecklist(w io.Writer, org, product string, report *api.Utilization, s
 	recommended := itemsIn(report.Items, api.UtilizationGroupRecommended)
 	fmt.Fprintf(&b, "\n%s %s\n",
 		style.paint(ansiBold, "Recommended"),
-		style.paint(ansiDim, fmt.Sprintf("(%d/%d)", doneCount(recommended), len(recommended))))
+		style.paint(ansiDim, fmt.Sprintf("(%d/%d)", doneCount(recommended), availableCount(recommended))))
 	writeItems(&b, recommended, width, style)
 
 	if optional := itemsIn(report.Items, api.UtilizationGroupOptional); len(optional) > 0 {
@@ -250,6 +249,18 @@ func itemsIn(items []api.UtilizationItem, group string) []api.UtilizationItem {
 		}
 	}
 	return out
+}
+
+// availableCount is how many of the items the server can offer. The rest are
+// not scored, so a section's total leaves them out as the score does.
+func availableCount(items []api.UtilizationItem) int {
+	n := 0
+	for _, item := range items {
+		if item.Status != api.UtilizationUnavailable {
+			n++
+		}
+	}
+	return n
 }
 
 func doneCount(items []api.UtilizationItem) int {

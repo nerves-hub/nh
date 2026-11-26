@@ -326,8 +326,9 @@ release can deliver to devices)
 **`nh checklist [product]`** — report which NervesHub features a product is
 using, the same report as the Utilization tab of the product's settings
 - opens with the score (recommended features in use, such as `(5/13)`) and how
-  the product's devices authenticate: `Shared Secret` in orange, `LocalCert`
-  and `NervesKey` in green
+  the product's devices authenticate: a method to move away from, such as a
+  secret shared by the whole product, in orange, the others in green and unused
+  ones dimmed
 - then each recommended feature (`✓` in use, `!` set up but risky or not showing up yet, `○` not in
   use, `-` not available on this server), and after those the optional ones,
   which don't count towards the score
