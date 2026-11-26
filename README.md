@@ -323,6 +323,22 @@ release can deliver to devices)
 - `list`, `show <serial>`, `delete <serial>` — `list` and `show` include each
   CA's JITP product, tags and description
 
+**`nh checklist [product]`** — report which NervesHub features a product is
+using, the same report as the Utilization tab of the product's settings
+- opens with the score (recommended features in use, such as `(5/13)`) and how
+  the product's devices authenticate: a method to move away from, such as a
+  secret shared by the whole product, in orange, the others in green and unused
+  ones dimmed
+- then each recommended feature (`✓` in use, `!` set up but risky or not showing up yet, `○` not in
+  use, `-` not available on this server), and after those the optional ones,
+  which don't count towards the score
+- recommended features not in use are followed by a link to their documentation;
+  `--verbose` describes and links every feature
+- `--color auto|always|never` (auto colours a terminal, and honours `NO_COLOR`);
+  `-o json` prints the report as the API gives it
+- the product defaults to `--product` / `nh config set product`; needs a
+  NervesHub server with the utilization report, and says so on an older one
+
 **`nh status`** — check that the configured server is up (`GET /status/alive`,
 no sign-in needed); `--timeout` sets how long to wait
 
